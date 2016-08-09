@@ -1,4 +1,4 @@
-# HA package built Mon Aug  8 16:21:01 2016
+# HA package version 3.0.1 built Tue Aug  9 14:47:31 2016
 if echo '
 ' | od -b | grep -q 015 ; then echo dos format script - exiting ; exit 0 ; fi ; true
 # This is a shell archive.  Save it in a file, remove anything before
@@ -8,10 +8,21 @@ if echo '
 #
 # This archive contains:
 #
+#	VERSION
+#	README
+#	RUNBOOK
+#	Release_Notes
+#	appdservice.c
 #	lib
 #	monitors
 #	monitors/DiskMonitor
 #	monitors/MysqlMonitor
+#	monitors/DiskMonitor/monitor.xml
+#	monitors/DiskMonitor/disk-stat.sh
+#	monitors/MysqlMonitor/monitor.xml
+#	monitors/MysqlMonitor/mysql-stat.sh
+#	monitors/DiskMonitor/README
+#	monitors/MysqlMonitor/README
 #	assassin.sh
 #	failover.sh
 #	watchdog.sh
@@ -43,6 +54,882 @@ if echo '
 #	lib/runuser.sh
 #	lib/init.sh
 #
+echo x - VERSION
+sed 's/^X//' >VERSION << 'END-of-VERSION'
+X3.0.1
+END-of-VERSION
+echo x - README
+sed 's/^X//' >README << 'END-of-README'
+XContents:
+X
+X	README: this file
+X	RUNBOOK:  a list of state descriptions, validations, and remedial actions
+X
+X
+X	replicate.sh:  the all-singing, all-dancing HA (re)activator
+X	this installs and sets up the HA function for a controller pair.
+X
+X	appdcontroller.sh: a file intended to be placed into /etc/init.d to control
+X	the controller, watchdog, and assassin
+X
+X	appdcontroller-db.sh: a file intended to be placed into /etc/init.d to control
+X	the mysql database
+X
+X	appdynamics-machine-agent.sh: a file to start the machine agent
+X
+X	assassin.sh:  a script run on a failed-over primary to kill the old primary
+X
+X	failover.sh:  a script run on a secondary to become the new primary
+X
+X	install-init.sh:  an installer for the appdcontroller.sh
+X
+X	uninstall-init.sh:  an uninstaller for the appdcontroller.sh
+X
+X	watchdog.sh:  run on a secondary to watch the primary and maybe failover
+X
+X	watchdog.settings.template:  copy this to watchdog.settings to override defaults
+X
+X	appdservice-root.sh:  a null privilege escalation wrapper
+X
+X	appdservice-pbrun.sh:  a privilege escalation wrapper around pbrun
+X
+X	appdservice.c:  a privilege escalation c program
+X
+X	numa.settings.template: a template file containing numa static node assignments
+X
+X	numa-patch-controller.sh:  a script to edit numa hooks into controller.sh
+X
+X	appdcontroller-db.sysconfig: source files for system configuration
+X	appdcontroller.sysconfig
+X	appdynamics-machine-agent.sysconfig
+X
+X	save_mysql_passwd.sh: a script used to obfuscate and save the mysql root password
+X	getaccess.sh:  a script to extract the access key from a database to set
+X			up monitoring
+X
+X	appdstatus.sh: a script to replace 'service appdcontroller status' on 
+X		systemd machines
+X
+XInstallation notes:
+XThis software is intended to connect the appdynamics controller into linux's
+Xservice machinery.  This optionally includes a watchdog process running on the
+Xsecondary HA node that will initiate a failover if a failure is detected in
+Xthe primary controller or database.
+X
+XPermissions: 
+X	If the controller is to be run as a non-root user, part of the 
+Xinstallation cannot be directly automated, as it involves installing of a 
+Xsystem service into /etc/init.d and ancillary directories using install-init.sh
+X
+XPrerequisites:
+X--------------
+X	1) Ssh must be installed in such a way that the user the controller is to 
+Xbe run as has symmetrical passwordless ssh access.  This is done by generating 
+Xa key pair on each node, and placing the other's public key into the appropriate
+Xauthorized_keys file.  in detail, assuming user appduser, node1 and node2
+X
+X	on node1:
+X
+X	su - appduser
+X	mkdir -p .ssh
+X	ssh-keygen -t rsa -N "" -f .ssh/id_rsa
+X	scp .ssh/id_rsa.pub node2:/tmp
+X
+X	on node2:
+X
+X	su - appduser
+X	mkdir -p .ssh
+X	ssh-keygen -t rsa -N "" -f .ssh/id_rsa
+X	cat /tmp/id_rsa.pub >> .ssh/authorized_keys
+X	scp .ssh/id_rsa.pub node1:/tmp
+X
+X	on node1:
+X	cat /tmp/id_rsa.pub >> ~/.ssh/authorized_keys
+X
+XAll of the above commands may not be needed, and some of them may prompt for a
+Xpassword.
+X
+X	2) reliable symmetrical reverse host lookup must be configured.  the best
+Xway is to place the host names into each /etc/hosts file.   reverse DNS adds 
+Xan additional point of failure.  
+X		a) /etc/nsswitch.conf should have files placed before dns. example:
+X			hosts:      files dns
+X		b) /etc/hosts:
+X			192.168.144.128 host1
+X			192.168.144.137 host2
+X
+X	3) each machine must have the root and data directory writable by the 
+Xappropriate appdynamics user:
+X
+X	ls -lad /opt/AppDynamics/Controller
+Xdrwxr-xr-x. 18 appduser users    4096 Jan 26 18:18 /opt/AppDynamics/Controller
+X
+X	4) the primary controller should be installed as a standalone controller;
+Xthe secondary should not be installed at all.
+X
+XInstallation:
+X-------------
+XOn the primary, unpack the shar file using bash into a directory HA under the 
+Xcontroller root install subdirectory.
+X
+X	cd /opt/AppDynamics/Controller
+X	mkdir -p HA
+X	chmod +w *
+X	bash HA.shar
+X	
+XMysql Password:
+X---------------
+Xnewer controllers remove the db/.rootpw file from the controller installation for
+Xsecurity reasons, plaintext passwords in data files being a known vulnerability.
+Xas the HA package requires frequent database access, it is impractical to prompt
+Xfor the password every time the database is used.   accordingly, we decrypt the
+Xpassword at each required access from a data file.  this data file must be written
+Xby the save_mysql_passwd.sh script before running any component of the HA toolkit.
+X
+X	cd HA
+X	./save_mysql_passwd.sh
+X
+X	this will prompt for the mysql root password
+X
+XActivation:
+X-----------
+XThe key script to replicate the primary database to the secondary, make all the
+Xappropriate state changes, and activate the HA pair is the replicate.sh script.
+Xit is run on an active controller.  Attempts to run it on a passive controller 
+Xwill be rejected.  it has a few specialized options, but it has reasonable
+Xdefaults and is extracts a lot of configuration information from the existing
+Xinstallation.  the most simple usage is to activate a HA pair immediately.
+Xrun the following as the same user as appdynamics is running as.
+Xsince the controller is taken down, the command will prompt for a confirmation message.
+X
+X	./replicate.sh -s node2 -f -w -e proxy
+X
+Xwhen it has completed, the HA pair will be running and replicating.
+XIf running as non-root, the command asks that some commands manually be run as
+Xroot to complete the installation.
+X
+XIncremental Activation:
+X-----------------------
+XRuns of the replicate script without the -f option will perform an imperfect 
+Xcopy of the primary controller to the secondary without taking the primary down.
+XThis can be used to minimize the downtime necessary to do the initial 
+Xinstallation.  if the data volume to replicate is large, several runs without
+Xthe -f option would approach a perfect copy over a period of days.  the final
+Xactivation with -f during a maintenance window would only copy those data filesi
+Xthat differ from the last copy.
+X
+XPrivilege Escalation:
+X---------------------
+Xthe install-init.sh script is used to install the init scripts, and to set
+Xup a controlled privilege escalation.  this can take the form of sudo settings,
+Xor one of 3 flavors of /sbin/appdservice. run install-init.sh for usage.
+X
+XService Control:
+X----------------
+XAfter activation, the controller service and HA facility can be controlled 
+Xusing the linux service command.  these options must be executed as root.
+XThe default installation will automatically shut down the controller when
+Xthe system is halted, and automatically start it at boot time.
+X
+X	service appdcontroller start
+X	service appdcontroller stop
+X
+Xan additional service, appdcontroller-db, is used to manage the database.
+Xa sensible dependency between the two services is implemented
+X
+XStatus:
+X-------
+XOnce installed as a service, the linux service utility can be run on either
+Xnode to report the current state of the replication, background processes, and
+Xthe controller itself.
+X
+X	service appdcontroller status
+X
+XWatchdog:
+X---------
+XIf enabled, this background process running on the secondary will monitor the
+Xprimary controller and database, and if it detects a failure, will initiate a
+Xfailover automatically.   The failure mode timings are defined in watchdog.sh.
+XThe watchdog is only enabled if the file <controller root>/HA/WATCHDOG_ENABLE
+Xexists. Removing the file causes the watchdog to exit.
+X
+Xto enable the watchdog, as root:
+X	touch <controller root>/HA/WATCHDOG_ENABLE
+X	chmod 777 <controller root>/HA/WATCHDOG_ENABLE
+X	service appdcontroller start
+X
+Xrunning the replicate.sh script with the -w option at final activation will 
+Xcreate the watchdog control file automatically.
+X
+XAssassin:
+X---------
+XAfter a failover, it is possible that the old primary may come online.  If this
+Xoccurs, the load balancer may send load to the old primary.  To prevent this,
+Xthe new primary continually polls the old primary and if it becomes accessible,
+Xkills it and inhibits it from starting again.
+X
+XFailover:
+X---------
+XA manual failover can be triggered by running failover.sh on the secondary.
+XThis will kill the watchdog and activate the database.  it will also try to
+Xassassinate the old primary.
+XThis only happens if replication is broken. if replication is good, we just
+Xdeactivate the other appserver and activation this one, while leaving the db
+Xup.  this case also does not fire up the assassin.
+X
+XLogging:
+X--------
+Xthe logs directory contains several status and progress logs of the various components.
+X
+XRemote controller monitoring
+X----------------------------
+XIf desired it is possible to have the controller's internal Java app agent report to 
+Xanother controller. This is most often useful if two or more controllers have been
+Xdeployed on-premises. Having them both report their health to a controller monitor
+Xsimlifies the monitoring of them all as common health rules and notification policies are
+Xmore easily re-used.
+X
+XAt least four pieces of information are needed to configure remote controller 
+Xmonitoring:
+X	- controller monitor's hostname
+X	- controller monitor's port
+X	- account name within controller monitor
+X	- controller monitor's access key for that account
+X	- [optional] application name to report under
+X
+XThe controller monitor's account names and access keys can be determined with:
+X	cd <controller install dir>
+X	echo "select access_key,name,id from account\G"| bin/controller.sh login-db
+X	this has been put into a script:
+X	./getaccess.sh -p password -h monitorhost:3388
+X	this will output the access key.  you can specify account name.
+X	see usage.
+X
+XYou can send a controller's app agent output to another controller with hostname
+X"cmonitor", access_key "ac-ce-ss-key", account name "customer1", application name 
+X'Prod HA pair' with:
+X	./replicate.sh -s <secondary> -m url=http://cmonitor:8090,access_key="ac-ce-ss-key",account_name=customer1,app_name='Prod HA pair' -f
+X
+XMachine Agent
+X-------------
+XHaving a machine agent on both primary and secondary servers is a pre-requisite step 
+Xto simple monitoring and warning of critical health issues affecting the stability
+Xof the HA controller pair. Getting to this state involves:
+X	1. downloading and installing the machine agent on both primary and
+X	   secondary servers from download.appdynamics.com. For compatibility see 
+X	   docs.appdynamics.com for your version of the controller.
+X	   Ensure that the machine agent install directory is the *same* for both
+X	   primary and secondary servers.
+X	2. Ensure that the same version of the HA Toolkit is available on both
+X	   primary and secondary servers. Use scp or replicate.sh -s <other> 
+X	3. As root (re)run HA Toolkit install on both primary and secondary servers
+X	   including '-a <agent install dir>' parameter. For example:
+X		sudo ./install-init.sh -s -a /opt/appdyn/machine-agent/4.1.5.1
+X	   if the machine agent was extracted into the parent of the appdynamics
+X       controller, or the controller directory itself, the -a may be ommitted.
+X	4. As regular AppD user (re)run replicate.sh .. -f to shutdown controller and
+X	   configure all remaining files with an extra parameter referring to machine
+X	   agent install directory. For example:
+X	   	replicate.sh -s <secondary> -e https://proxy -a /opt/appdyn/machine-agent/3.9.0.0 -t 0 -z -f 
+X
+XIf a remote controller monitor has been configured, include that '-m' option in the 
+Xreplicate.sh command to ensure the machine agents report there also. For example:
+X		./replicate.sh -s <secondary> -m url=http://cmonitor:8090,access_key="ac-ce-ss-key",account_name=customer1,app_name='Prod HA pair' -a /opt/appdyn/machine-agent/3.9.0.0 -f
+X	 5. please note that the machine agent will be run as the same user as
+X        the mysql database.
+X
+XNUMA
+X----
+Xon a numa machine, it may be useful, for performance reasons,  to statically partition the machine to run mysqld on 
+Xone set of nodes and the java appserver on another set of nodes.  this can be easily done by running numa-patch-controller.sh
+Xfrom the HA directory, and copying the numa.settings.template to numa.settings.  edit numa.settings as needed.
+X
+XBest Practices:
+X---------------
+XIf possible, a dedicated network connection should be provisioned between the
+XHA pair.  this set of interfaces should be the ones placed into the /etc/hosts
+Xfiles, and used as the argument for the -s option to the replicate.sh script.
+X
+XBackups are best done by stopping the appdcontroller service on the secondary
+Xand performing a file-level copy of the appdynamics directories.  these can
+Xbe incremental or complete, depending on the reliability of your solution.
+Xwhen the backup is done, simply start the service; replication will catch up
+Xand guarantee the integrity of your data.
+X
+XA load balancer can probe http://<controller>:<port>/rest/serverstatus
+Xto determine which of the two controllers is active. the active node will
+Xreturn a HTTP 200.
+X
+Xshould it be necessary to have a hook in the failover process, for example to update 
+Xa dynamics DNS service or to notify a load balancer or proxy, the failover.sh script 
+Xis the place to add code.
+X
+XVersion and Copyright
+X---------------------
+X$Id: README 1.13 2016-08-04 03:09:49 cmayer Exp $
+X
+X Copyright 2016 AppDynamics, Inc
+X
+X   Licensed under the Apache License, Version 2.0 (the "License");
+X   you may not use this file except in compliance with the License.
+X   You may obtain a copy of the License at
+X
+X       http://www.apache.org/licenses/LICENSE-2.0
+X
+X  Unless required by applicable law or agreed to in writing, software
+X  distributed under the License is distributed on an "AS IS" BASIS,
+X  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X  See the License for the specific language governing permissions and
+X  limitations under the License.
+END-of-README
+echo x - RUNBOOK
+sed 's/^X//' >RUNBOOK << 'END-of-RUNBOOK'
+XThe HA environment can be in several states, and it is desireable to place 
+Xthe systems into the fully replicated state as soon as possible. here are
+Xthe possible states, how to identify the state, and the corresponding 
+Xprocedure to repair the condition.
+X
+X-----------
+XNOT PRESENT:
+X	the HA package has not been installed on the primary machine.
+X
+Xdiagnosis:
+X	the HA directory is absent from the controller directory.
+X
+Xto fix:
+X	cd <controller root> ; mkdir HA ; cd HA ; bash <path>/HA.shar
+X	then follow the steps for UNINSTALLED
+X
+X-----------
+XUNINSTALLED:
+X	the package is present in the controller HA directory, but the
+X	services have not been installed.
+X
+Xdiagnosis:
+X	service appdcontroller status shows appdcontroller service not found
+X
+Xto fix:
+X	cd <controller root>/HA
+X	become root
+X	./install-init.sh [-c | -s]
+X
+X------------
+XNO HOSTS:
+X	the secondary machine does not have a resolvable host name
+X
+Xdiagnosis:
+X	ping <secondary> returns unknown host
+X
+Xto fix:
+X	add the primary and secondary host name into both machines /etc/hosts files
+X	
+X------------
+XNO SSH:
+X	the appdynamics user does not have no-password ssh access between
+X	machines.
+X
+Xdiagnosis:
+X	ssh <secondary> date prompts for a password
+X
+Xto fix:
+X	in the below, you will be prompted for passwords and confirmations
+X	ssh-keygen -P "" -f ~/.ssh/id_rsa -t rsa
+X	ssh <secondary> ssh-keygen -P "''" -f ~/.ssh/id_rsa -t rsa
+X	scp ~/.ssh/id_rsa.pub <secondary>:.ssh/authorized_keys
+X	scp <secondary>:.ssh/id_rsa.pub ~/.ssh/authorized_keys
+X
+X------------
+XUNREPLICATED: the HA package has been installed on the primary controller,
+Xbut the package has not been activated.
+X
+Xdiagnosis:
+X	service appdcontroller-db status shows "HA not installed" 
+X
+Xto fix:
+X	cd <controller root>/HA
+X	./replicate -s <secondary>
+X	<become root on secondary>
+X		cd <controller root>/HA
+X		./install-init [-c | -s]
+X		exit
+X	<back on primary>
+X	./replicate -s <secondary> -e <vip>	-f
+X		confirm
+X
+X----------
+XDISCONNECTED:
+XReplication communication is being blocked, HA has been installed and activated,
+Xbut a firewall is preventing access to replication communications.
+X
+Xdiagnosis:
+X	service appdcontroller-db status shows 
+X		"Slave_IO_State: Connecting to master"
+X		"Seconds_Behind_Master: NULL"
+X
+Xto fix:
+X	disable the firewall for port 3388
+X	brute force as root:  iptables -F
+X
+X----------
+XREPLICATED, WATCHDOG RUNNING: 
+Xthe HA package is running fully replicated, and the primary node is serving
+Xagents with metric storage, and the UI is responsive.  the secondary is
+Xmonitoring the primary appserver with a watchdog process.
+X
+Xdiagnosis:
+X	service appdcontroller status on the primary reports:
+X	db running as <user> - active
+X	primary
+X		Slave_IO_State: Waiting for master to send event
+X	controller running
+X
+X	service appdcontroller status on the secondary reports:
+X	db running as <user> - passive
+X	secondary
+X		Slave_IO_State: Waiting for master to send event
+X	watchdog running
+X
+Xto fix:
+X	nothing to fix
+X
+X----------
+XREPLICATED, WATCHDOG NOT RUNNING: 
+Xthe HA package is running fully replicated, and the primary node is serving
+Xagents with metric storage, and the UI is responsive.  the secondary is
+Xnot monitoring the primary appserver with a watchdog process.
+X
+Xdiagnosis:
+X	service appdcontroller status on the primary reports:
+X	db running as <user> - active
+X	primary
+X		Slave_IO_State: Waiting for master to send event
+X	controller running
+X
+X	service appdcontroller status on the secondary reports:
+X	db running as <user> - passive
+X	secondary
+X		Slave_IO_State: Waiting for master to send event
+X	watchdog not running
+X
+Xto fix:
+X	on the secondary
+X	cd <controller root>/HA
+X	touch WATCHDOG_ENABLE
+X	/sbin/appdservice appdcontroller start
+X
+X---------
+XFAILED OVER, old primary broken
+XThe current active node has become active because of a failover.  the prior
+Xactive node's database is inaccessible.  the assassin is running on the new
+Xactive node to mark the old active node passive once it comes up.
+X
+Xdiagnosis:
+X	service appdcontroller status on the primary reports:
+X	db running as <user> - active
+X	secondary
+X		Slave_IO_State:
+X		Seconds_Behind_Master: NULL
+X	assassin running
+X
+Xto fix:
+X	replicate from the new active node to the old active node using
+X	the formula for UNREPLICATED
+X
+X------------
+XFAILED OVER, watchdog running
+XThe current active node has become active because of a failover.  the prior
+Xactive node database is still intact, and replication is valid. the new
+Xsecondary node has a watchdog running.  this is identical to the REPLICATED,
+XWATCHDOG_RUNNING state.
+X
+Xdiagnosis:
+X	service appdcontroller status on the original primary reports:
+X	db running as <user> - passive
+X		Slave_IO_State: Waiting for master to send event
+X	secondary
+X	watchdog running
+X
+X	service appdcontroller status on the original secondary reports:
+X	db running as <user> - active
+X	primary
+X		Slave_IO_State: Waiting for master to send event
+X	controller running
+X
+Xto-fix:
+X	no need to fix anything.  should it be desired to make the original node
+X	the active node:
+X
+X	on the original primary,
+X	cd <controller root>/HA
+X	./failover.sh
+X
+X-------------
+XPASSIVE DOWN
+Xthis is a state deliberately caused to perform a consistent backup of the
+Xdatabase.   it is initiated on the passive node by running:
+X/sbin/appdservice appdcontroller-db stop
+X
+Xdiagnosis:
+X	/sbin/appdservice appdcontroller-db status on the passive node reports:
+X	db not running
+X
+Xto-fix:
+X	on the passive controller,
+X	/sbin/appdservice appdcontroller start
+X
+X-------------
+XERROR: bash: get_mysql_passwd: unable to get MySQL root passwd. As appdyn user run HA/save_mysql_passwd.sh interactively and try again.
+X
+Xdiagnosis:
+X	A stored MySQL root password, obfuscated or clear has not been found. Storing the 
+X	MySQL root password to disk is a requirement for the HA Toolkit running with
+X	service which in turn needs privilege escalation eg /sbin/appdservice or sudo or pbrun
+X
+Xto-fix:
+X	> on the server as the intended AppD user (here "appdyn"):
+X	HA/save_mysql_passwd.sh 
+X	> this will persist the password after obfuscating it
+X
+XVersion and Copyright:
+X----------------------
+X$Id: RUNBOOK 3.0 2016-08-04 03:09:49 cmayer Exp $
+X
+X Copyright 2016 AppDynamics, Inc
+X
+X   Licensed under the Apache License, Version 2.0 (the "License");
+X   you may not use this file except in compliance with the License.
+X   You may obtain a copy of the License at
+X
+X       http://www.apache.org/licenses/LICENSE-2.0
+X
+X   Unless required by applicable law or agreed to in writing, software
+X   distributed under the License is distributed on an "AS IS" BASIS,
+X   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X   See the License for the specific language governing permissions and
+X   limitations under the License.
+END-of-RUNBOOK
+echo x - Release_Notes
+sed 's/^X//' >Release_Notes << 'END-of-Release_Notes'
+X
+X Copyright 2016 AppDynamics, Inc
+X
+X   Licensed under the Apache License, Version 2.0 (the "License");
+X   you may not use this file except in compliance with the License.
+X   You may obtain a copy of the License at
+X
+X       http://www.apache.org/licenses/LICENSE-2.0
+X
+X  Unless required by applicable law or agreed to in writing, software
+X   distributed under the License is distributed on an "AS IS" BASIS,
+X   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X   See the License for the specific language governing permissions and
+X   limitations under the License.
+X
+X--------------------------------------------
+X
+XRelease notes for version 3.0
+X
+XIn addition to bug fixes, the package has been substantially enhanced and 
+Xre-written for enhanced portability, security, performance and maintainability.
+X
+XThe following new functionality is present:
+X
+X1) replicate optionally can use of non-encrypted rsync.  in environments where 
+Xa VPN or a dedicated network exists between primary and secondary controllers, 
+Xreplication can be noticably faster.  this is enabled by using the -U option.
+X
+X2) mysql replication can use SSL encryption.  a pair of signed certificates 
+Xand keys is exchanged between the 2 mysql instances.  after this negotiation,
+Xall communication for mysql replication is encrypted.
+X
+X3) mysql replication compression is enabled by default
+X
+X4) the secondary no longer places replicated traffic in it's bin-logs.  this
+Xgreatly decreases disk usage on the secondary
+X
+X5) scripts and support files are added for NUMA segregation
+X
+X6) the machine agent is can run as non-root, and automatically is configured
+Xwith additional monitors to surface custom mysql and disk metrics. also,
+Xthe machine agent is automatically detected if it is in the controller root
+Xdirectory or it's parent.  we use the controller JVM, so there is no need
+Xto install anything other than the Java-less zip file of the machine agent.
+X
+X7) configuration of an external monitoring host is simplified
+X
+X8) support for controller versions greater than 4.2.0, which removed the
+Xplaintext password file for mysql root.  we have 2 distinct solutions to
+Xthis:  recreate the db/.rootpw file, or run the save_mysql_passwd.sh script
+Xwhich obfuscates the password and save that, unscrambling it whenever it is
+Xneeded
+X
+X9) more extensive logging of the replicate process
+X
+X10) init script configuration is now done via sysconfig files installed in
+X/etc/sysconfig (for redhat) or /etc/default (for debian).
+X
+X11) greater compatibility with systemd.  newer linux distributions have a
+Xdifferent implementation of boot time init script handling, which does not
+Xsupport the clean execution of the service status verb.  this is deprecated
+Xon these systems, and a new script,  HA/appdstatus.sh, is supplied to replace 
+Xthis functionality.
+X
+XSignificant bug fixes in this release:
+X
+X1) files of size less than 1M are checksummed to prevent rsync missing them
+Xif changes to the file did not cause it to grow
+X
+X2) the database health check now recovers if one of the steps timed out.
+X
+X3) failover can not longer oscillate between two machines
+X
+X4) the secondary controller now waits until the relay logs have been executed
+Xbefore starting the new appserver on failover.   although this can take quite
+Xsome time, it prevents database inconsistencies.
+X
+X------------------------------------
+XRelease notes for version 3.0.1
+X
+Xthis is a minor bugfix and enhancement release.
+X
+X1) added support for fairly ugly root mysql passwords.  whitespace characters
+Xare not supported, but punctuation is ok, plus $*()...
+X
+X2) failover is a bit smarter about breaking replication.   all things being
+Xotherwise ok, if the old primary has been up at least 1 hour, we don't break
+Xreplication
+X
+X3) in the case of a persistent replication break, if we KNOW that the database
+Xis not damaged on each end, we can run replicate -E to restore the slave to
+Xoperation.
+X
+X4) the machine agent is started with nodename set
+X
+X5) install_init.sh changes ownership of the machine agent to RUNUSER
+X
+X6) Documentation on machine agent startup additions
+END-of-Release_Notes
+echo x - appdservice.c
+sed 's/^X//' >appdservice.c << 'END-of-appdservice.c'
+X/*
+X * $Id: appdservice.c 3.0 2016-08-04 12:22:17 cmayer $
+X *
+X *
+X * Copyright 2016 AppDynamics, Inc
+X *
+X *   Licensed under the Apache License, Version 2.0 (the "License");
+X *   you may not use this file except in compliance with the License.
+X *   You may obtain a copy of the License at
+X *
+X *       http://www.apache.org/licenses/LICENSE-2.0
+X *
+X *   Unless required by applicable law or agreed to in writing, software
+X *   distributed under the License is distributed on an "AS IS" BASIS,
+X *   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X *   See the License for the specific language governing permissions and
+X *   limitations under the License.
+X *
+X * this program is a trampoline for the Appdynamics user to invoke
+X * a controlled escalation of privilege to cause changes in the
+X * installed appdynamics services via the system's service wrapper,
+X * which is root-only
+X *
+X * security is ensured by only changing the enumerated services
+X * and the enumerated funtions.  
+X *
+X * this file contains all the distro specific knowledge
+X * it is intentionally coded in a brute-force manner to be trivially auditable
+X *
+X * all the source strings for the execv array are internal to this file, and
+X * all the input arguments are only read using strcmp;  buffer overflows
+X * are not possible.
+X *
+X * also, since we use execv, no path processing is done.
+X */
+X#include <stdlib.h>
+X#include <stdio.h>
+X#include <string.h>
+X#include <unistd.h>
+X#include <fcntl.h>
+X
+X/*
+X * these names are intentionally not the same pointer, even though they have
+X * the same value.
+X * we never copy anything from the arguments to the exec arguments.
+X */
+Xstruct service {
+X	char *name;
+X	char *service_name;
+X} services[] = {
+X	{ "appdcontroller",		"appdcontroller" },
+X	{ "appdcontroller-db",	"appdcontroller-db" },
+X	{ "appdynamics-machine-agent", 	"appdynamics-machine-agent" }
+X};
+X#define NSRV (sizeof(services)/sizeof(services[0]))
+X
+X/* number of possible handlers */
+X#define	NHAND	3
+X
+Xstruct action {
+X	char *name;
+X	struct handler {
+X		char *prog;
+X		char *verb;
+X	} handlers[NHAND];
+X} actions[] = {
+X	{ "status", {
+X		{ "service", "status" },
+X		{ 0, 0 },
+X		{ 0, 0 }}
+X	},
+X	{ "start", {
+X		{ "service", "start" },
+X		{ 0, 0 },
+X		{ 0, 0 }}
+X	},
+X	{ "stop", {
+X		{ "service", "stop" },
+X		{ 0, 0 },
+X		{ 0, 0 }}
+X	},
+X	{ "enable", {
+X		{ "chkconfig", "on" },
+X		{ "update-rc.d", "enable" },
+X		{ 0, 0 }}
+X	},
+X	{ "disable", {
+X		{ "chkconfig", "off" },
+X		{ "update-rc.d", "disable" },
+X		{ 0, 0 }}
+X	}
+X};
+X#define NACT (sizeof(actions)/sizeof(actions[0]))
+X
+X/*
+X * the complete list of directories for lookup of commands
+X */
+Xchar *bindirs[] = {
+X	"/sbin", "/usr/sbin", 0
+X};
+X
+Xvoid
+Xusage(char *pname)
+X{
+X	int i, j;
+X
+X	fprintf(stderr, "usage: %s <service> <action>\n", pname);
+X	for (i = 0; i < NSRV; i++) {
+X		fprintf(stderr, "\t%s {", services[i].name);
+X		for (j = 0; j < NACT; j++) {
+X			fprintf(stderr, "%s", actions[j].name);
+X			if (j < NACT - 1) {
+X				fprintf(stderr, ",");
+X			}
+X		}
+X		fprintf(stderr, "}\n");
+X	}
+X	exit (1);
+X}
+X
+X/*
+X * return zero if the program is executable in the specified directory
+X */
+Xint
+Xexecutable_at(char *dir, char *prog)
+X{
+X	int dirfd;
+X	int ret;
+X
+X	dirfd = open(dir, O_RDONLY | O_DIRECTORY);
+X	ret = faccessat(dirfd, prog, AT_EACCESS, X_OK);
+X	close(dirfd);
+X	return (ret);
+X}
+X
+Xchar *argvec[4];
+Xchar *progpath;
+X
+Xint
+Xmain(int argc, char**argv)
+X{
+X	char cmdbuf[80];
+X	int svc;
+X	int act;
+X	int hand;
+X	char *prog;
+X	char *dir;
+X	
+X	if (argc != 3) {
+X		usage(argv[0]);
+X		exit (1);
+X	}
+X
+X	/* look up service */
+X	for (svc = 0; svc < NSRV; svc++) {
+X		if (strcmp(services[svc].name, argv[1]) == 0) {
+X			break;
+X		}
+X	}
+X	if (svc >= NSRV) {
+X		fprintf(stderr, "unknown service %s\n", argv[1]);
+X		usage(argv[0]);
+X	}
+X
+X	/* look up action */
+X	for (act = 0; act < NACT; act++) {
+X		if (strcmp(actions[act].name, argv[2]) == 0) {
+X			break;
+X		}
+X	}
+X	if (act >= NACT) {
+X		fprintf(stderr, "unknown action %s\n", argv[2]);
+X		usage(argv[0]);
+X	}
+X
+X	/* validate that we are either the appdynamics user or root */
+X	if (getuid() != APPDUSER && getuid() != 0) {
+X		fprintf(stderr, "must be run as user id %d or root\n", APPDUSER);
+X		exit(2);
+X	}
+X
+X	/* validate that we are effectively root */
+X	if (geteuid() != 0) {
+X		fprintf(stderr, "must be run setuid root\n");
+X		exit(3);
+X	}
+X	
+X	/* definitively become root */
+X	setreuid(0, 0);
+X	setregid(0, 0);
+X
+X	/* iterate through handlers until null */
+X	for (hand = 0; prog = actions[act].handlers[hand].prog; hand++) {
+X
+X		/* search the bindirs */
+X		for (dir = bindirs[0]; dir; dir++) {
+X
+X			/* if we can run it, do so */
+X			if (executable_at(dir, prog)) {
+X
+X				progpath = malloc(strlen(dir) + strlen(prog) + 2);
+X				strcpy(progpath, dir);
+X				strcat(progpath, "/");
+X				strcat(progpath, prog);
+X				argvec[0] = strdup(prog);
+X				argvec[1] = strdup(services[svc].service_name);
+X				argvec[2] = strdup(actions[act].handlers[hand].verb);
+X				argvec[3] = 0;
+X
+X				execv(progpath, argvec);	
+X			}
+X		}
+X	}
+X
+X	fprintf(stderr, "no valid handlers found for service %s action %s\n",
+X		services[svc].name, actions[act].name);
+X	exit(4);
+X}
+END-of-appdservice.c
 echo c - lib
 mkdir -p lib > /dev/null 2>&1
 echo c - monitors
@@ -51,13 +938,277 @@ echo c - monitors/DiskMonitor
 mkdir -p monitors/DiskMonitor > /dev/null 2>&1
 echo c - monitors/MysqlMonitor
 mkdir -p monitors/MysqlMonitor > /dev/null 2>&1
+echo x - monitors/DiskMonitor/monitor.xml
+sed 's/^X//' >monitors/DiskMonitor/monitor.xml << 'END-of-monitors/DiskMonitor/monitor.xml'
+X<monitor>
+X    <name>DiskMonitor</name>
+X    <type>managed</type>
+X    <enabled>true</enabled>
+X    <enable-override os-type="solaris">true</enable-override>
+X    <enable-override os-type="sunos">true</enable-override>
+X    <description>Disk Monitor
+X    </description>
+X    <monitor-configuration>
+X    </monitor-configuration>
+X    <monitor-run-task>
+X        <execution-style>continuous</execution-style>
+X        <name>Run</name>
+X        <type>executable</type>
+X        <task-arguments>
+X        </task-arguments>
+X        <executable-task>
+X            <type>file</type>
+X            <file os-type="linux">disk-stat.sh</file>
+X        </executable-task>
+X    </monitor-run-task>
+X</monitor>
+END-of-monitors/DiskMonitor/monitor.xml
+echo x - monitors/DiskMonitor/disk-stat.sh
+sed 's/^X//' >monitors/DiskMonitor/disk-stat.sh << 'END-of-monitors/DiskMonitor/disk-stat.sh'
+X#!/bin/bash
+X#
+X# Monitors Disks on Linux
+X#
+X# version 1.3
+X#
+X# using only: date, awk, sleep
+X#
+X# Copyright 2016 AppDynamics, Inc
+X#
+X#   Licensed under the Apache License, Version 2.0 (the "License");
+X#   you may not use this file except in compliance with the License.
+X#   You may obtain a copy of the License at
+X#
+X#       http://www.apache.org/licenses/LICENSE-2.0
+X#
+X#   Unless required by applicable law or agreed to in writing, software
+X#   distributed under the License is distributed on an "AS IS" BASIS,
+X#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X#   See the License for the specific language governing permissions and
+X#   limitations under the License.
+X#
+X
+XMOUNTS=
+X# uncomment the next line to enable custom metrics for mounted filesystems
+X#MOUNTS=`mount| awk '/^\/dev/ {sub("/dev/","",$1);printf("%s:%s;",$1, $3)}'`
+X# uncomment the next line to enable custom metrics for swap
+X#MOUNTS+=`awk '/\/dev/ {sub("/dev/","",$1);printf("%s:swap;",$1)}'< /proc/swaps`
+X
+X# interval between reads of network and disk numbers
+XSAMPLE=10
+X
+XPATH=$PATH:/bin:/usr/sbin:/sbin:/usr/bin:/usr/local/sbin:/usr/local/bin
+X
+Xwhile [ 1 ]; do
+XNEXTSECONDS=`date +%s | awk '{print $1 + 60}'`
+Xiostat -x 2 2 | awk '
+X	/Device:/ { state ++; next }
+X	( NF == 12 && state == 2) { 
+X		agg="AVERAGE";
+X		dev = $1;
+X		printf("name=Hardware Resources|Disk|%s|avg req size,aggregator=%s,value=%d\n", dev, agg, $8);
+X		printf("name=Hardware Resources|Disk|%s|avg queue length,aggregator=%s,value=%d\n", dev, agg, $9);
+X		printf("name=Hardware Resources|Disk|%s|avg wait (us),aggregator=%s,value=%d\n", dev, agg, $10*1000);
+X		printf("name=Hardware Resources|Disk|%s|avg svctime (us),aggregator=%s,value=%d\n", dev, agg, $11*1000);
+X		printf("name=Hardware Resources|Disk|%s|utilization (us),aggregator=%s,value=%d\n", dev, agg, $12);
+X	}
+X'
+X
+XSLEEPTIME=`date +"$NEXTSECONDS %s" | awk '{if ($1 > $2) print $1 - $2; else print 0;}'`
+Xsleep $SLEEPTIME
+Xdone
+END-of-monitors/DiskMonitor/disk-stat.sh
+echo x - monitors/MysqlMonitor/monitor.xml
+sed 's/^X//' >monitors/MysqlMonitor/monitor.xml << 'END-of-monitors/MysqlMonitor/monitor.xml'
+X<monitor>
+X    <name>MysqlMonitor</name>
+X    <type>managed</type>
+X    <enabled>true</enabled>
+X    <enable-override os-type="solaris">true</enable-override>
+X    <enable-override os-type="sunos">true</enable-override>
+X    <description>Mysql Monitor
+X    </description>
+X    <monitor-configuration>
+X    </monitor-configuration>
+X    <monitor-run-task>
+X        <execution-style>continuous</execution-style>
+X        <name>Run</name>
+X        <type>executable</type>
+X        <task-arguments>
+X        </task-arguments>
+X        <executable-task>
+X            <type>file</type>
+X            <file os-type="linux">mysql-stat.sh</file>
+X        </executable-task>
+X    </monitor-run-task>
+X</monitor>
+END-of-monitors/MysqlMonitor/monitor.xml
+echo x - monitors/MysqlMonitor/mysql-stat.sh
+sed 's/^X//' >monitors/MysqlMonitor/mysql-stat.sh << 'END-of-monitors/MysqlMonitor/mysql-stat.sh'
+X#!/bin/bash
+X#
+X# Monitors INNODB
+X#
+X# $Id: mysql-stat.sh 3.0 2016-08-04 03:09:03 cmayer $
+X#
+X# Copyright 2016 AppDynamics, Inc
+X#
+X#   Licensed under the Apache License, Version 2.0 (the "License");
+X#   you may not use this file except in compliance with the License.
+X#   You may obtain a copy of the License at
+X#
+X#       http://www.apache.org/licenses/LICENSE-2.0
+X#
+X#   Unless required by applicable law or agreed to in writing, software
+X#   distributed under the License is distributed on an "AS IS" BASIS,
+X#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X#   See the License for the specific language governing permissions and
+X#   limitations under the License.
+X#
+XPATH=$PATH:/bin:/usr/sbin:/sbin:/usr/bin:/usr/local/sbin:/usr/local/bin
+X
+X[ -f /etc/sysconfig/appdcontroller ] && . /etc/sysconfig/appdcontroller
+X[ -f /etc/default/appdcontroller ] && . /etc/default/appdcontroller
+X
+Xif [ -x $APPD_ROOT/HA/mysqlclient.sh ] ; then
+X	MYSQLCLIENT="$APPD_ROOT/HA/mysqlclient.sh"
+Xelse
+X	MYSQLCLIENT="$APPD_ROOT/bin/controller.sh login-db"
+X fi 
+X
+Xwhile [ 1 ]; do
+XNEXTSECONDS=`date +%s | awk '{print $1 + 60}'`
+X
+Xecho "show engine innodb status\G" | $MYSQLCLIENT | awk '
+X
+X	/^BUFFER POOL AND MEMORY/ { state = 1; }
+X	/^Database pages/ { if (state == 1) {
+X		bufcnt = $3; 
+X	}}
+X	/^Modified/ { if (state == 1) {
+X		dirty = $4;
+X	}}
+X	/^Old database pages/ { if (state == 1) {
+X		oldpages = $4;
+X	}}
+X
+X	/^INDIVIDUAL BUFFER POOL INFO/ { state = 2; }
+X
+X	/^TRANSACTIONS/ { state = 3; }
+X	/^History list length/ { if (state == 3) histlen = $4; }
+X	/^---TRANSACTION.*ACTIVE/ { if (state == 3) {
+X		xcount++;
+X		active = $4; if (active > hiwat) {hiwat = active}
+X	}}
+X
+X	/^FILE I/ { state = 4; }
+X	/reads.*writes.*fsyncs/ { if (state == 4) {
+X		reads = $1; writes = $6; syncs = $8;
+X	}}
+X
+X	/^LOG/ { state = 5; }
+X	/Log sequence number/ { if (state == 5) { logseq = $4}}
+X	/Log flushed up to/ { if (state == 5) { logflushed = $5}}
+X	/Last checkpoint at/ { if (state == 5) { logcheckpoint = $4}}
+X	/Max checkpoint age/ { if (state == 5) { maxcheckpointage = $4}}
+X	/Checkpoint age target/ { if (state == 5) { checkpointagetarget = $4}}
+X	/Modified age/ { if (state == 5) { modifiedage = $3}}
+X	/Checkpoint age/ { if (state == 5) { checkpointage = $3}}
+X	/pending log writes,.*pending chkp writes/ { if (state == 5) { pendinglog=$1; pendingckpt=$5 }}
+X	/log.*done.*log.*second/ { if (state == 5) {
+X		logio = $5;
+X	}}
+X
+X	/^ROW OPERATIONS/ { state = 6; }
+X	/inserts.*updates.*deletes.*reads/ { if (state == 6) {
+X		inserts = $1; updates = $3; deletes = $5; rowreads = $7;
+X	}}
+X
+X	END { 
+X		printf("name=Custom Metrics|Mysql|Buffers Used,aggregator=OBSERVATION,value=%d\n", bufcnt);
+X		printf("name=Custom Metrics|Mysql|Buffers Dirty,aggregator=OBSERVATION,value=%d\n", dirty);
+X		printf("name=Custom Metrics|Mysql|Buffers Old,aggregator=OBSERVATION,value=%d\n", oldpages);
+X
+X		printf("name=Custom Metrics|Mysql|Transaction count,aggregator=OBSERVATION,value=%d\n", xcount);
+X		printf("name=Custom Metrics|Mysql|Transaction high time,aggregator=OBSERVATION,value=%d\n", hiwat);
+X
+X		printf("name=Custom Metrics|Mysql|File reads,aggregator=OBSERVATION,value=%d\n", reads);
+X		printf("name=Custom Metrics|Mysql|File writes,aggregator=OBSERVATION,value=%d\n", writes);
+X		printf("name=Custom Metrics|Mysql|File syncs,aggregator=OBSERVATION,value=%d\n", syncs);
+X
+X		printf("name=Custom Metrics|Mysql|Log seq number,aggregator=OBSERVATION,value=%d\n", logseq);
+X		printf("name=Custom Metrics|Mysql|Log flushed,aggregator=OBSERVATION,value=%d\n", logflushed);
+X		printf("name=Custom Metrics|Mysql|Log checkpoint,aggregator=OBSERVATION,value=%d\n", logcheckpoint);
+X
+X		printf("name=Custom Metrics|Mysql|Log dirty,aggregator=OBSERVATION,value=%d\n", logseq - logflushed);
+X		printf("name=Custom Metrics|Mysql|Log used,aggregator=OBSERVATION,value=%d\n", logseq - logcheckpoint);
+X
+X		printf("name=Custom Metrics|Mysql|Log max checkpoint age,aggregator=OBSERVATION,value=%d\n", maxcheckpointage);
+X		printf("name=Custom Metrics|Mysql|Log checkpoint age target,aggregator=OBSERVATION,value=%d\n", checkpointagetarget);
+X		printf("name=Custom Metrics|Mysql|Log modified age,aggregator=OBSERVATION,value=%d\n", modifiedage);
+X		printf("name=Custom Metrics|Mysql|Log checkpoint age,aggregator=OBSERVATION,value=%d\n", checkpointage);
+X		printf("name=Custom Metrics|Mysql|Log pending log writes,aggregator=OBSERVATION,value=%d\n", pendinglog);
+X		printf("name=Custom Metrics|Mysql|Log pending checkpoint writes,aggregator=OBSERVATION,value=%d\n", pendingckpt);
+X		printf("name=Custom Metrics|Mysql|Log io,aggregator=OBSERVATION,value=%d\n", logio);
+X
+X		printf("name=Custom Metrics|Mysql|Row inserts,aggregator=OBSERVATION,value=%d\n", inserts);
+X		printf("name=Custom Metrics|Mysql|Row updates,aggregator=OBSERVATION,value=%d\n", updates);
+X		printf("name=Custom Metrics|Mysql|Row deletes,aggregator=OBSERVATION,value=%d\n", deletes);
+X		printf("name=Custom Metrics|Mysql|Row reads,aggregator=OBSERVATION,value=%d\n", rowreads);
+X
+X	}
+X'
+X
+Xecho "show slave status\G" | $MYSQLCLIENT | awk '
+X
+X	/Seconds_Behind_Master:/ { spm = $2; }
+X
+X	END { 
+X		printf("name=Custom Metrics|Mysql|Slave Seconds Behind Master,aggregator=OBSERVATION,value=%d\n", spm);
+X	}
+X'
+Xecho "select value from global_configuration_local where name = 'appserver.mode'\G" | $MYSQLCLIENT | awk '
+X
+X	/value:/ { if ($2 == "active") active = 1; else active = 0; }
+X
+X	END { 
+X		printf("name=Custom Metrics|Mysql|Appserver Active,aggregator=OBSERVATION,value=%d\n", active);
+X	}
+X'
+X
+XSLEEPTIME=`date +"$NEXTSECONDS %s" | awk '{if ($1 > $2) print $1 - $2; else print 0;}'`
+Xsleep $SLEEPTIME
+Xdone
+END-of-monitors/MysqlMonitor/mysql-stat.sh
+echo x - monitors/DiskMonitor/README
+sed 's/^X//' >monitors/DiskMonitor/README << 'END-of-monitors/DiskMonitor/README'
+Xthis is a machine agent monitor that surfaces extended disk statistics
+Xuseful for diagnosing controller issues
+END-of-monitors/DiskMonitor/README
+echo x - monitors/MysqlMonitor/README
+sed 's/^X//' >monitors/MysqlMonitor/README << 'END-of-monitors/MysqlMonitor/README'
+Xmachine agent monitor useful for diagnosing database issues and surfacing
+XHA-related metrics
+END-of-monitors/MysqlMonitor/README
 echo x - assassin.sh
 sed 's/^X//' >assassin.sh << 'END-of-assassin.sh'
 X#!/bin/bash
 X#
 X# $Id: assassin.sh 3.0 2016-08-04 03:09:03 cmayer $
 X#
-X# assassin.sh
+X# Copyright 2016 AppDynamics, Inc
+X#
+X#   Licensed under the Apache License, Version 2.0 (the "License");
+X#   you may not use this file except in compliance with the License.
+X#   You may obtain a copy of the License at
+X#
+X#       http://www.apache.org/licenses/LICENSE-2.0
+X#
+X#   Unless required by applicable law or agreed to in writing, software
+X#   distributed under the License is distributed on an "AS IS" BASIS,
+X#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X#   See the License for the specific language governing permissions and
+X#   limitations under the License.
 X#
 X# run on the active node after a failover, 
 X# this shoots down any secondary controller to prevent two actives 
@@ -195,10 +1346,23 @@ X#!/bin/bash
 X#
 X# $Id: failover.sh 3.0.1 2016-08-08 13:40:17 cmayer $
 X#
-X# failover.sh
 X# run on the passive node, activate this HA node.
 X# 
 X# if run with the -f option, force hard failover
+X#
+X# Copyright 2016 AppDynamics, Inc
+X#
+X#   Licensed under the Apache License, Version 2.0 (the "License");
+X#   you may not use this file except in compliance with the License.
+X#   You may obtain a copy of the License at
+X#
+X#       http://www.apache.org/licenses/LICENSE-2.0
+X#
+X#   Unless required by applicable law or agreed to in writing, software
+X#   distributed under the License is distributed on an "AS IS" BASIS,
+X#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X#   See the License for the specific language governing permissions and
+X#   limitations under the License.
 X#
 Xcd $(dirname $0)
 X
@@ -497,7 +1661,21 @@ X#
 X# watchdog.sh
 X# run on the passive node, fail over if we see the primary is very sick
 X# if we are not capable of failing over, fall over immediately
-X
+X#
+X# Copyright 2016 AppDynamics, Inc
+X#
+X#   Licensed under the Apache License, Version 2.0 (the "License");
+X#   you may not use this file except in compliance with the License.
+X#   You may obtain a copy of the License at
+X#
+X#       http://www.apache.org/licenses/LICENSE-2.0
+X#
+X#   Unless required by applicable law or agreed to in writing, software
+X#   distributed under the License is distributed on an "AS IS" BASIS,
+X#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X#   See the License for the specific language governing permissions and
+X#   limitations under the License.
+X#
 Xcd $(dirname $0)
 X
 X# source function libraries
@@ -976,7 +2154,20 @@ sed 's/^X//' >watchdog.settings.template << 'END-of-watchdog.settings.template'
 X# $Id: watchdog.settings.template 3.0 2015-12-23 00:36:28 cmayer $
 X#
 X# watchdog.settings
-X
+X#
+X# Copyright 2016 AppDynamics, Inc
+X#
+X#   Licensed under the Apache License, Version 2.0 (the "License");
+X#   you may not use this file except in compliance with the License.
+X#   You may obtain a copy of the License at
+X#
+X#       http://www.apache.org/licenses/LICENSE-2.0
+X#
+X#   Unless required by applicable law or agreed to in writing, software
+X#   distributed under the License is distributed on an "AS IS" BASIS,
+X#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X#   See the License for the specific language governing permissions and
+X#   limitations under the License.
 X# 
 X# These are the default timeouts, in seconds, before the watchdog will
 X# initiate a failover.  If they are set to low, they can cause unexpected
@@ -1027,7 +2218,20 @@ X# during.
 X#
 X# this has very limited sanity checking, so please be very careful.
 X#
-X
+X# Copyright 2016 AppDynamics, Inc
+X#
+X#   Licensed under the Apache License, Version 2.0 (the "License");
+X#   you may not use this file except in compliance with the License.
+X#   You may obtain a copy of the License at
+X#
+X#       http://www.apache.org/licenses/LICENSE-2.0
+X#
+X#   Unless required by applicable law or agreed to in writing, software
+X#   distributed under the License is distributed on an "AS IS" BASIS,
+X#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X#   See the License for the specific language governing permissions and
+X#   limitations under the License.
+X#
 Xcd $(dirname $0)
 X
 XLOGNAME=replicate.log
@@ -2489,6 +3693,20 @@ X# $Id: install-init.sh 3.0.1 2016-08-08 14:52:22 cmayer $
 X#
 X# install init scripts, including the machine agent.
 X#
+X# Copyright 2016 AppDynamics, Inc
+X#
+X#   Licensed under the Apache License, Version 2.0 (the "License");
+X#   you may not use this file except in compliance with the License.
+X#   You may obtain a copy of the License at
+X#
+X#       http://www.apache.org/licenses/LICENSE-2.0
+X#
+X#   Unless required by applicable law or agreed to in writing, software
+X#   distributed under the License is distributed on an "AS IS" BASIS,
+X#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X#   See the License for the specific language governing permissions and
+X#   limitations under the License.
+X#
 Xfunction usage {
 X	echo "$0 [-options] where:"
 X	echo "   -c  # use setuid c wrapper"
@@ -2823,6 +4041,20 @@ X# $Id: uninstall-init.sh 3.0 2016-08-04 03:09:03 cmayer $
 X#
 X# uninstall init script
 X#
+X# Copyright 2016 AppDynamics, Inc
+X#
+X#   Licensed under the Apache License, Version 2.0 (the "License");
+X#   you may not use this file except in compliance with the License.
+X#   You may obtain a copy of the License at
+X#
+X#       http://www.apache.org/licenses/LICENSE-2.0
+X#
+X#   Unless required by applicable law or agreed to in writing, software
+X#   distributed under the License is distributed on an "AS IS" BASIS,
+X#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X#   See the License for the specific language governing permissions and
+X#   limitations under the License.
+X#
 Xexport PATH=/sbin:/usr/sbin:$PATH
 X
 Xfunction remove {
@@ -2876,6 +4108,20 @@ X# $Id: appdservice-pbrun.sh 3.0 2016-08-04 03:09:03 cmayer $
 X#
 X# shell wrapper around pbrun for appdynamics service changes
 X#
+X# Copyright 2016 AppDynamics, Inc
+X#
+X#   Licensed under the Apache License, Version 2.0 (the "License");
+X#   you may not use this file except in compliance with the License.
+X#   You may obtain a copy of the License at
+X#
+X#       http://www.apache.org/licenses/LICENSE-2.0
+X#
+X#   Unless required by applicable law or agreed to in writing, software
+X#   distributed under the License is distributed on an "AS IS" BASIS,
+X#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X#   See the License for the specific language governing permissions and
+X#   limitations under the License.
+X#
 XPBRUN=/usr/local/bin/pbrun
 X
 Xfunction usage {
@@ -2921,6 +4167,20 @@ X# $Id: appdservice-root.sh 3.0 2016-08-04 03:09:03 cmayer $
 X#
 X# shell wrapper around service for service changes - designed to run as root
 X#
+X# Copyright 2016 AppDynamics, Inc
+X#
+X#   Licensed under the Apache License, Version 2.0 (the "License");
+X#   you may not use this file except in compliance with the License.
+X#   You may obtain a copy of the License at
+X#
+X#       http://www.apache.org/licenses/LICENSE-2.0
+X#
+X#   Unless required by applicable law or agreed to in writing, software
+X#   distributed under the License is distributed on an "AS IS" BASIS,
+X#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X#   See the License for the specific language governing permissions and
+X#   limitations under the License.
+X#
 Xfunction usage {
 X	echo usage: "$0 [appdcontroller|appdcontroller-db|appdynamics-machine-agent start|stop|status]"
 X	exit 1
@@ -2958,6 +4218,20 @@ X#
 X# $Id: appdservice-xuser.sh 3.0 2016-08-04 03:09:03 cmayer $
 X#
 X# user defined shell wrapper for appdynamics service changes
+X#
+X# Copyright 2016 AppDynamics, Inc
+X#
+X#   Licensed under the Apache License, Version 2.0 (the "License");
+X#   you may not use this file except in compliance with the License.
+X#   You may obtain a copy of the License at
+X#
+X#       http://www.apache.org/licenses/LICENSE-2.0
+X#
+X#   Unless required by applicable law or agreed to in writing, software
+X#   distributed under the License is distributed on an "AS IS" BASIS,
+X#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X#   See the License for the specific language governing permissions and
+X#   limitations under the License.
 X#
 X
 Xfunction usage {
@@ -3000,6 +4274,20 @@ X#
 X# print out the status of the appdynamics controller on this node
 X#
 X# $Id: appdstatus.sh 3.0 2016-06-29 12:58:56 cmayer $
+X#
+X# Copyright 2016 AppDynamics, Inc
+X#
+X#   Licensed under the Apache License, Version 2.0 (the "License");
+X#   you may not use this file except in compliance with the License.
+X#   You may obtain a copy of the License at
+X#
+X#       http://www.apache.org/licenses/LICENSE-2.0
+X#
+X#   Unless required by applicable law or agreed to in writing, software
+X#   distributed under the License is distributed on an "AS IS" BASIS,
+X#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X#   See the License for the specific language governing permissions and
+X#   limitations under the License.
 X#
 X
 Xcd $(dirname $0)
@@ -3237,12 +4525,24 @@ X# $Id: appdynamics-machine-agent.sh 3.0 2016-08-04 03:09:03 cmayer $
 X#
 X# /etc/init.d/appdynamics-machine-agent
 X#
-X# This file describes the machine agent service. Copy it or place it in /etc/init.d to ensure the machine
-X# agent is started as a service. If you installed the machine agent via an RPM or DEB package, it should
+X# This file describes the machine agent service. Copy it or place it in 
+X# /etc/init.d to ensure the machine agent is started as a service. 
+X# If you installed the machine agent via an RPM or DEB package, it should
 X# already be placed there.
 X#
-X# Copyright (c) 2014 AppDynamics Inc
-X# All rights reserved
+X# Copyright 2016 AppDynamics, Inc
+X#
+X#   Licensed under the Apache License, Version 2.0 (the "License");
+X#   you may not use this file except in compliance with the License.
+X#   You may obtain a copy of the License at
+X#
+X#       http://www.apache.org/licenses/LICENSE-2.0
+X#
+X#   Unless required by applicable law or agreed to in writing, software
+X#   distributed under the License is distributed on an "AS IS" BASIS,
+X#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X#   See the License for the specific language governing permissions and
+X#   limitations under the License.
 X#
 X### BEGIN INIT INFO
 X# Provides:          appdynamics-machine-agent
@@ -3285,6 +4585,20 @@ X# init.sh
 X# contains functions to change user and run processes
 X# 
 X# also, common code for the init scripts.
+X#
+X# Copyright 2016 AppDynamics, Inc
+X#
+X#   Licensed under the Apache License, Version 2.0 (the "License");
+X#   you may not use this file except in compliance with the License.
+X#   You may obtain a copy of the License at
+X#
+X#       http://www.apache.org/licenses/LICENSE-2.0
+X#
+X#   Unless required by applicable law or agreed to in writing, software
+X#   distributed under the License is distributed on an "AS IS" BASIS,
+X#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X#   See the License for the specific language governing permissions and
+X#   limitations under the License.
 X# 
 X# RUNUSER must be defined before here
 Xif [ -z "$RUNUSER" ] ; then
@@ -3419,6 +4733,20 @@ sed 's/^X//' >appdynamics-machine-agent.sysconfig << 'END-of-appdynamics-machine
 X#
 X# $Id: appdynamics-machine-agent.sysconfig 3.0.1 2016-08-08 13:40:17 cmayer $
 X#
+X# Copyright 2016 AppDynamics, Inc
+X#
+X#   Licensed under the Apache License, Version 2.0 (the "License");
+X#   you may not use this file except in compliance with the License.
+X#   You may obtain a copy of the License at
+X#
+X#       http://www.apache.org/licenses/LICENSE-2.0
+X#
+X#   Unless required by applicable law or agreed to in writing, software
+X#   distributed under the License is distributed on an "AS IS" BASIS,
+X#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X#   See the License for the specific language governing permissions and
+X#   limitations under the License.
+X#
 XAPPD_ROOT=/opt/AppDynamics/Controller
 XMACHINE_AGENT_HOME=/opt/appdynamics/machine-agent
 XRUNUSER=root
@@ -3433,6 +4761,20 @@ X#
 X# trivial command that executes sql for us.  this is intended
 X# to be invoked from an init script via runuser, so we can log
 X# output the rows as key-value pairs
+X#
+X# Copyright 2016 AppDynamics, Inc
+X#
+X#   Licensed under the Apache License, Version 2.0 (the "License");
+X#   you may not use this file except in compliance with the License.
+X#   You may obtain a copy of the License at
+X#
+X#       http://www.apache.org/licenses/LICENSE-2.0
+X#
+X#   Unless required by applicable law or agreed to in writing, software
+X#   distributed under the License is distributed on an "AS IS" BASIS,
+X#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X#   See the License for the specific language governing permissions and
+X#   limitations under the License.
 X#
 Xcd $(dirname $0)
 X
@@ -3474,6 +4816,20 @@ X#!/bin/bash
 X#
 X# $Id: getaccess.sh 3.0 2016-08-03 19:23:30 cmayer $
 X# helper script to get the access key from an account table
+X#
+X# Copyright 2016 AppDynamics, Inc
+X#
+X#   Licensed under the Apache License, Version 2.0 (the "License");
+X#   you may not use this file except in compliance with the License.
+X#   You may obtain a copy of the License at
+X#
+X#       http://www.apache.org/licenses/LICENSE-2.0
+X#
+X#   Unless required by applicable law or agreed to in writing, software
+X#   distributed under the License is distributed on an "AS IS" BASIS,
+X#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X#   See the License for the specific language governing permissions and
+X#   limitations under the License.
 X#
 Xcd $(dirname $0)
 X
@@ -3541,6 +4897,20 @@ X### END INIT INFO
 X#
 X# $Id: appdcontroller.sh 3.0 2016-08-04 03:09:03 cmayer $
 X# 
+X# Copyright 2016 AppDynamics, Inc
+X#
+X#   Licensed under the Apache License, Version 2.0 (the "License");
+X#   you may not use this file except in compliance with the License.
+X#   You may obtain a copy of the License at
+X#
+X#       http://www.apache.org/licenses/LICENSE-2.0
+X#
+X#   Unless required by applicable law or agreed to in writing, software
+X#   distributed under the License is distributed on an "AS IS" BASIS,
+X#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X#   See the License for the specific language governing permissions and
+X#   limitations under the License.
+X#
 X# HA Aware Init file for AppDynamics Controller 
 X# 
 X# chkconfig: 2345 60 25 
@@ -3588,7 +4958,20 @@ X#
 X# policy:
 X# intended to be minimalized for inclusion into the init functions
 X# 
-X
+X#
+X# Copyright 2016 AppDynamics, Inc
+X#
+X#   Licensed under the Apache License, Version 2.0 (the "License");
+X#   you may not use this file except in compliance with the License.
+X#   You may obtain a copy of the License at
+X#
+X#       http://www.apache.org/licenses/LICENSE-2.0
+X#
+X#   Unless required by applicable law or agreed to in writing, software
+X#   distributed under the License is distributed on an "AS IS" BASIS,
+X#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X#   See the License for the specific language governing permissions and
+X#   limitations under the License.
 X#
 X# Collection of routines to deal with MySQL root password
 X#
@@ -3759,6 +5142,20 @@ X# init.sh
 X# contains functions to change user and run processes
 X# 
 X# also, common code for the init scripts.
+X#
+X# Copyright 2016 AppDynamics, Inc
+X#
+X#   Licensed under the Apache License, Version 2.0 (the "License");
+X#   you may not use this file except in compliance with the License.
+X#   You may obtain a copy of the License at
+X#
+X#       http://www.apache.org/licenses/LICENSE-2.0
+X#
+X#   Unless required by applicable law or agreed to in writing, software
+X#   distributed under the License is distributed on an "AS IS" BASIS,
+X#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X#   See the License for the specific language governing permissions and
+X#   limitations under the License.
 X# 
 X# RUNUSER must be defined before here
 Xif [ -z "$RUNUSER" ] ; then
@@ -3836,13 +5233,25 @@ X#!/bin/bash
 X#
 X# $Id: lib/conf.sh 3.0 2016-08-04 03:09:03 cmayer $
 X#
-X# ha.sh
 X# contains common code used to extract and set information in the
 X# config files.
 X#
 X# there is some hair here having to do with permissions,
 X# and we invoke runuser to do file access as the appropriate user
-X
+X#
+X# Copyright 2016 AppDynamics, Inc
+X#
+X#   Licensed under the Apache License, Version 2.0 (the "License");
+X#   you may not use this file except in compliance with the License.
+X#   You may obtain a copy of the License at
+X#
+X#       http://www.apache.org/licenses/LICENSE-2.0
+X#
+X#   Unless required by applicable law or agreed to in writing, software
+X#   distributed under the License is distributed on an "AS IS" BASIS,
+X#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X#   See the License for the specific language governing permissions and
+X#   limitations under the License.
 X# 
 X# filenames
 X#
@@ -4414,6 +5823,20 @@ X### END INIT INFO
 X#
 X# $Id: appdcontroller-db.sh 3.0 2016-08-04 03:09:03 cmayer $
 X# 
+X# Copyright 2016 AppDynamics, Inc
+X#
+X#   Licensed under the Apache License, Version 2.0 (the "License");
+X#   you may not use this file except in compliance with the License.
+X#   You may obtain a copy of the License at
+X#
+X#       http://www.apache.org/licenses/LICENSE-2.0
+X#
+X#   Unless required by applicable law or agreed to in writing, software
+X#   distributed under the License is distributed on an "AS IS" BASIS,
+X#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X#   See the License for the specific language governing permissions and
+X#   limitations under the License.
+X#
 X# HA Aware Init file for AppDynamics Controller 
 X# 
 X# chkconfig: 2345 60 25 
@@ -4425,7 +5848,6 @@ X#
 X# edit this manually if it hasn't been automatically set by the install-init.sh
 X# script
 X#
-X
 X# Setting PATH to just a few trusted directories is an **important security** requirement
 XPATH=/bin:/usr/bin:/sbin:/usr/sbin
 X
@@ -4456,7 +5878,20 @@ X#
 X# policy:
 X# intended to be minimalized for inclusion into the init functions
 X# 
-X
+X#
+X# Copyright 2016 AppDynamics, Inc
+X#
+X#   Licensed under the Apache License, Version 2.0 (the "License");
+X#   you may not use this file except in compliance with the License.
+X#   You may obtain a copy of the License at
+X#
+X#       http://www.apache.org/licenses/LICENSE-2.0
+X#
+X#   Unless required by applicable law or agreed to in writing, software
+X#   distributed under the License is distributed on an "AS IS" BASIS,
+X#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X#   See the License for the specific language governing permissions and
+X#   limitations under the License.
 X#
 X# Collection of routines to deal with MySQL root password
 X#
@@ -4627,6 +6062,20 @@ X# init.sh
 X# contains functions to change user and run processes
 X# 
 X# also, common code for the init scripts.
+X#
+X# Copyright 2016 AppDynamics, Inc
+X#
+X#   Licensed under the Apache License, Version 2.0 (the "License");
+X#   you may not use this file except in compliance with the License.
+X#   You may obtain a copy of the License at
+X#
+X#       http://www.apache.org/licenses/LICENSE-2.0
+X#
+X#   Unless required by applicable law or agreed to in writing, software
+X#   distributed under the License is distributed on an "AS IS" BASIS,
+X#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X#   See the License for the specific language governing permissions and
+X#   limitations under the License.
 X# 
 X# RUNUSER must be defined before here
 Xif [ -z "$RUNUSER" ] ; then
@@ -4704,13 +6153,25 @@ X#!/bin/bash
 X#
 X# $Id: lib/conf.sh 3.0 2016-08-04 03:09:03 cmayer $
 X#
-X# ha.sh
 X# contains common code used to extract and set information in the
 X# config files.
 X#
 X# there is some hair here having to do with permissions,
 X# and we invoke runuser to do file access as the appropriate user
-X
+X#
+X# Copyright 2016 AppDynamics, Inc
+X#
+X#   Licensed under the Apache License, Version 2.0 (the "License");
+X#   you may not use this file except in compliance with the License.
+X#   You may obtain a copy of the License at
+X#
+X#       http://www.apache.org/licenses/LICENSE-2.0
+X#
+X#   Unless required by applicable law or agreed to in writing, software
+X#   distributed under the License is distributed on an "AS IS" BASIS,
+X#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X#   See the License for the specific language governing permissions and
+X#   limitations under the License.
 X# 
 X# filenames
 X#
@@ -5394,6 +6855,20 @@ sed 's/^X//' >appdcontroller.sysconfig << 'END-of-appdcontroller.sysconfig'
 X#
 X# $Id: appdcontroller.sysconfig 3.0 2016-06-29 12:58:56 cmayer $
 X# 
+X# Copyright 2016 AppDynamics, Inc
+X#
+X#   Licensed under the Apache License, Version 2.0 (the "License");
+X#   you may not use this file except in compliance with the License.
+X#   You may obtain a copy of the License at
+X#
+X#       http://www.apache.org/licenses/LICENSE-2.0
+X#
+X#   Unless required by applicable law or agreed to in writing, software
+X#   distributed under the License is distributed on an "AS IS" BASIS,
+X#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X#   See the License for the specific language governing permissions and
+X#   limitations under the License.
+X#
 X# system config settings for appdynamics appserver
 X# the source file for this is installed in HA/appdcontroller.sysconfig
 X#
@@ -5410,6 +6885,20 @@ sed 's/^X//' >appdcontroller-db.sysconfig << 'END-of-appdcontroller-db.sysconfig
 X#
 X# $Id: appdcontroller-db.sysconfig 3.0 2016-06-29 12:58:56 cmayer $
 X# 
+X# Copyright 2016 AppDynamics, Inc
+X#
+X#   Licensed under the Apache License, Version 2.0 (the "License");
+X#   you may not use this file except in compliance with the License.
+X#   You may obtain a copy of the License at
+X#
+X#       http://www.apache.org/licenses/LICENSE-2.0
+X#
+X#   Unless required by applicable law or agreed to in writing, software
+X#   distributed under the License is distributed on an "AS IS" BASIS,
+X#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X#   See the License for the specific language governing permissions and
+X#   limitations under the License.
+X#
 X# system config settings for appdynamics database
 X# the source file for this is installed in HA/appdcontroller-db.sysconfig
 X#
@@ -5430,6 +6919,20 @@ X#
 X# copy this file to numa.settings if on a numa machine and we want to statically
 X# bind java and mysql to different nodes
 X#
+X# Copyright 2016 AppDynamics, Inc
+X#
+X#   Licensed under the Apache License, Version 2.0 (the "License");
+X#   you may not use this file except in compliance with the License.
+X#   You may obtain a copy of the License at
+X#
+X#       http://www.apache.org/licenses/LICENSE-2.0
+X#
+X#   Unless required by applicable law or agreed to in writing, software
+X#   distributed under the License is distributed on an "AS IS" BASIS,
+X#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X#   See the License for the specific language governing permissions and
+X#   limitations under the License.
+X#
 XNUMA_MYSQL="numactl --cpunodebind 0 --preferred 0"
 XNUMA_JAVA="numactl --cpunodebind 1 --preferred 1"
 END-of-numa.settings.template
@@ -5440,6 +6943,20 @@ X#
 X# $Id: numa-patch-controller.sh 3.0 2016-08-04 03:09:03 cmayer $
 X#
 X# patch the controller.sh script to enable numa support
+X#
+X# Copyright 2016 AppDynamics, Inc
+X#
+X#   Licensed under the Apache License, Version 2.0 (the "License");
+X#   you may not use this file except in compliance with the License.
+X#   You may obtain a copy of the License at
+X#
+X#       http://www.apache.org/licenses/LICENSE-2.0
+X#
+X#   Unless required by applicable law or agreed to in writing, software
+X#   distributed under the License is distributed on an "AS IS" BASIS,
+X#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X#   See the License for the specific language governing permissions and
+X#   limitations under the License.
 X#
 Xcd $(dirname $0)
 X
@@ -5532,6 +7049,20 @@ X# $Id: save_mysql_passwd.sh 3.0 2016-08-04 03:09:03 cmayer $
 X#
 X# a simple wrapper around the obfuscated password saver function
 X#
+X# Copyright 2016 AppDynamics, Inc
+X#
+X#   Licensed under the Apache License, Version 2.0 (the "License");
+X#   you may not use this file except in compliance with the License.
+X#   You may obtain a copy of the License at
+X#
+X#       http://www.apache.org/licenses/LICENSE-2.0
+X#
+X#   Unless required by applicable law or agreed to in writing, software
+X#   distributed under the License is distributed on an "AS IS" BASIS,
+X#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X#   See the License for the specific language governing permissions and
+X#   limitations under the License.
+X#
 Xcd $(dirname $0)
 X
 X. lib/log.sh
@@ -5562,7 +7093,20 @@ X#
 X# policy:
 X# intended to be minimalized for inclusion into the init functions
 X# 
-X
+X#
+X# Copyright 2016 AppDynamics, Inc
+X#
+X#   Licensed under the Apache License, Version 2.0 (the "License");
+X#   you may not use this file except in compliance with the License.
+X#   You may obtain a copy of the License at
+X#
+X#       http://www.apache.org/licenses/LICENSE-2.0
+X#
+X#   Unless required by applicable law or agreed to in writing, software
+X#   distributed under the License is distributed on an "AS IS" BASIS,
+X#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X#   See the License for the specific language governing permissions and
+X#   limitations under the License.
 X#
 X# Collection of routines to deal with MySQL root password
 X#
@@ -5730,7 +7274,20 @@ X# $Id: lib/ha.sh 3.0.1 2016-08-08 13:40:17 cmayer $
 X#
 X# ha.sh
 X# contains common code used by the HA toolkit
-X
+X#
+X# Copyright 2016 AppDynamics, Inc
+X#
+X#   Licensed under the Apache License, Version 2.0 (the "License");
+X#   you may not use this file except in compliance with the License.
+X#   You may obtain a copy of the License at
+X#
+X#       http://www.apache.org/licenses/LICENSE-2.0
+X#
+X#   Unless required by applicable law or agreed to in writing, software
+X#   distributed under the License is distributed on an "AS IS" BASIS,
+X#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X#   See the License for the specific language governing permissions and
+X#   limitations under the License.
 X# 
 X# filenames
 X#
@@ -5877,7 +7434,21 @@ X#
 X# run sql statements
 X# potentially logging, potentially with timeouts,
 X# outputting rows as key-value pairs
-X##
+X#
+X# Copyright 2016 AppDynamics, Inc
+X#
+X#   Licensed under the Apache License, Version 2.0 (the "License");
+X#   you may not use this file except in compliance with the License.
+X#   You may obtain a copy of the License at
+X#
+X#       http://www.apache.org/licenses/LICENSE-2.0
+X#
+X#   Unless required by applicable law or agreed to in writing, software
+X#   distributed under the License is distributed on an "AS IS" BASIS,
+X#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X#   See the License for the specific language governing permissions and
+X#   limitations under the License.
+X#
 X
 Xdbpasswd=${dbpasswd:-`get_mysql_passwd`}
 Xdbport=${dbport:-`dbcnf_get port`}
@@ -6028,7 +7599,20 @@ X# logging code for the HA toolkit - include this first
 X#
 X# all use the global LOGNAME
 X# 
-X
+X# Copyright 2016 AppDynamics, Inc
+X#
+X#   Licensed under the Apache License, Version 2.0 (the "License");
+X#   you may not use this file except in compliance with the License.
+X#   You may obtain a copy of the License at
+X#
+X#       http://www.apache.org/licenses/LICENSE-2.0
+X#
+X#   Unless required by applicable law or agreed to in writing, software
+X#   distributed under the License is distributed on an "AS IS" BASIS,
+X#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X#   See the License for the specific language governing permissions and
+X#   limitations under the License.
+X#
 Xif [ -z "$APPD_ROOT" ] ; then
 X	APPD_ROOT=$( cd $(dirname "$0"); cd .. ; pwd -P)
 Xfi
@@ -6133,13 +7717,25 @@ X#!/bin/bash
 X#
 X# $Id: lib/conf.sh 3.0 2016-08-04 03:09:03 cmayer $
 X#
-X# ha.sh
 X# contains common code used to extract and set information in the
 X# config files.
 X#
 X# there is some hair here having to do with permissions,
 X# and we invoke runuser to do file access as the appropriate user
-X
+X#
+X# Copyright 2016 AppDynamics, Inc
+X#
+X#   Licensed under the Apache License, Version 2.0 (the "License");
+X#   you may not use this file except in compliance with the License.
+X#   You may obtain a copy of the License at
+X#
+X#       http://www.apache.org/licenses/LICENSE-2.0
+X#
+X#   Unless required by applicable law or agreed to in writing, software
+X#   distributed under the License is distributed on an "AS IS" BASIS,
+X#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X#   See the License for the specific language governing permissions and
+X#   limitations under the License.
 X# 
 X# filenames
 X#
@@ -6375,7 +7971,20 @@ X#!/bin/bash
 X#
 X# $Id: lib/runuser.sh 3.0 2016-08-04 03:09:03 cmayer $
 X#
-X# runuser.sh
+X# Copyright 2016 AppDynamics, Inc
+X#
+X#   Licensed under the Apache License, Version 2.0 (the "License");
+X#   you may not use this file except in compliance with the License.
+X#   You may obtain a copy of the License at
+X#
+X#       http://www.apache.org/licenses/LICENSE-2.0
+X#
+X#   Unless required by applicable law or agreed to in writing, software
+X#   distributed under the License is distributed on an "AS IS" BASIS,
+X#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X#   See the License for the specific language governing permissions and
+X#   limitations under the License.
+X#
 X# contains function stubs to make the runuser hook disappear
 X# this file is intended to be included by shell scripts running
 X# as the appdynamics user only.
@@ -6404,6 +8013,20 @@ X# init.sh
 X# contains functions to change user and run processes
 X# 
 X# also, common code for the init scripts.
+X#
+X# Copyright 2016 AppDynamics, Inc
+X#
+X#   Licensed under the Apache License, Version 2.0 (the "License");
+X#   you may not use this file except in compliance with the License.
+X#   You may obtain a copy of the License at
+X#
+X#       http://www.apache.org/licenses/LICENSE-2.0
+X#
+X#   Unless required by applicable law or agreed to in writing, software
+X#   distributed under the License is distributed on an "AS IS" BASIS,
+X#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+X#   See the License for the specific language governing permissions and
+X#   limitations under the License.
 X# 
 X# RUNUSER must be defined before here
 Xif [ -z "$RUNUSER" ] ; then
@@ -6474,1051 +8097,5 @@ X	fi
 X}
 X
 END-of-lib/init.sh
-
-# This is a shell archive.  Save it in a file, remove anything before
-# this line, and then unpack it by entering "sh file".  Note, it may
-# create directories; files and directories will be owned by you and
-# have default permissions.
-#
-# This archive contains:
-#
-#	README
-#	RUNBOOK
-#	Release_Notes
-#	appdservice.c
-#	monitors/DiskMonitor/monitor.xml
-#	monitors/DiskMonitor/disk-stat.sh
-#	monitors/MysqlMonitor/monitor.xml
-#	monitors/MysqlMonitor/mysql-stat.sh
-#
-echo x - README
-sed 's/^X//' >README << 'END-of-README'
-XContents:
-X
-X	README: this file
-X	RUNBOOK:  a list of state descriptions, validations, and remedial actions
-X
-X
-X	replicate.sh:  the all-singing, all-dancing HA (re)activator
-X	this installs and sets up the HA function for a controller pair.
-X
-X	appdcontroller.sh: a file intended to be placed into /etc/init.d to control
-X	the controller, watchdog, and assassin
-X
-X	appdcontroller-db.sh: a file intended to be placed into /etc/init.d to control
-X	the mysql database
-X
-X	appdynamics-machine-agent.sh: a file to start the machine agent
-X
-X	assassin.sh:  a script run on a failed-over primary to kill the old primary
-X
-X	failover.sh:  a script run on a secondary to become the new primary
-X
-X	install-init.sh:  an installer for the appdcontroller.sh
-X
-X	uninstall-init.sh:  an uninstaller for the appdcontroller.sh
-X
-X	watchdog.sh:  run on a secondary to watch the primary and maybe failover
-X
-X	watchdog.settings.template:  copy this to watchdog.settings to override defaults
-X
-X	appdservice-root.sh:  a null privilege escalation wrapper
-X
-X	appdservice-pbrun.sh:  a privilege escalation wrapper around pbrun
-X
-X	appdservice.c:  a privilege escalation c program
-X
-X	numa.settings.template: a template file containing numa static node assignments
-X
-X	numa-patch-controller.sh:  a script to edit numa hooks into controller.sh
-X
-X	appdcontroller-db.sysconfig: source files for system configuration
-X	appdcontroller.sysconfig
-X	appdynamics-machine-agent.sysconfig
-X
-X	save_mysql_passwd.sh: a script used to obfuscate and save the mysql root password
-X	getaccess.sh:  a script to extract the access key from a database to set
-X			up monitoring
-X
-X	appdstatus.sh: a script to replace 'service appdcontroller status' on 
-X		systemd machines
-X
-XInstallation notes:
-XThis software is intended to connect the appdynamics controller into linux's
-Xservice machinery.  This optionally includes a watchdog process running on the
-Xsecondary HA node that will initiate a failover if a failure is detected in
-Xthe primary controller or database.
-X
-XPermissions: 
-X	If the controller is to be run as a non-root user, part of the 
-Xinstallation cannot be directly automated, as it involves installing of a 
-Xsystem service into /etc/init.d and ancillary directories using install-init.sh
-X
-XPrerequisites:
-X--------------
-X	1) Ssh must be installed in such a way that the user the controller is to 
-Xbe run as has symmetrical passwordless ssh access.  This is done by generating 
-Xa key pair on each node, and placing the other's public key into the appropriate
-Xauthorized_keys file.  in detail, assuming user appduser, node1 and node2
-X
-X	on node1:
-X
-X	su - appduser
-X	mkdir -p .ssh
-X	ssh-keygen -t rsa -N "" -f .ssh/id_rsa
-X	scp .ssh/id_rsa.pub node2:/tmp
-X
-X	on node2:
-X
-X	su - appduser
-X	mkdir -p .ssh
-X	ssh-keygen -t rsa -N "" -f .ssh/id_rsa
-X	cat /tmp/id_rsa.pub >> .ssh/authorized_keys
-X	scp .ssh/id_rsa.pub node1:/tmp
-X
-X	on node1:
-X	cat /tmp/id_rsa.pub >> ~/.ssh/authorized_keys
-X
-XAll of the above commands may not be needed, and some of them may prompt for a
-Xpassword.
-X
-X	2) reliable symmetrical reverse host lookup must be configured.  the best
-Xway is to place the host names into each /etc/hosts file.   reverse DNS adds 
-Xan additional point of failure.  
-X		a) /etc/nsswitch.conf should have files placed before dns. example:
-X			hosts:      files dns
-X		b) /etc/hosts:
-X			192.168.144.128 host1
-X			192.168.144.137 host2
-X
-X	3) each machine must have the root and data directory writable by the 
-Xappropriate appdynamics user:
-X
-X	ls -lad /opt/AppDynamics/Controller
-Xdrwxr-xr-x. 18 appduser users    4096 Jan 26 18:18 /opt/AppDynamics/Controller
-X
-X	4) the primary controller should be installed as a standalone controller;
-Xthe secondary should not be installed at all.
-X
-XInstallation:
-X-------------
-XOn the primary, unpack the shar file using bash into a directory HA under the 
-Xcontroller root install subdirectory.
-X
-X	cd /opt/AppDynamics/Controller
-X	mkdir -p HA
-X	chmod +w *
-X	bash HA.shar
-X	
-XMysql Password:
-X---------------
-Xnewer controllers remove the db/.rootpw file from the controller installation for
-Xsecurity reasons, plaintext passwords in data files being a known vulnerability.
-Xas the HA package requires frequent database access, it is impractical to prompt
-Xfor the password every time the database is used.   accordingly, we decrypt the
-Xpassword at each required access from a data file.  this data file must be written
-Xby the save_mysql_passwd.sh script before running any component of the HA toolkit.
-X
-X	cd HA
-X	./save_mysql_passwd.sh
-X
-X	this will prompt for the mysql root password
-X
-XActivation:
-X-----------
-XThe key script to replicate the primary database to the secondary, make all the
-Xappropriate state changes, and activate the HA pair is the replicate.sh script.
-Xit is run on an active controller.  Attempts to run it on a passive controller 
-Xwill be rejected.  it has a few specialized options, but it has reasonable
-Xdefaults and is extracts a lot of configuration information from the existing
-Xinstallation.  the most simple usage is to activate a HA pair immediately.
-Xrun the following as the same user as appdynamics is running as.
-Xsince the controller is taken down, the command will prompt for a confirmation message.
-X
-X	./replicate.sh -s node2 -f -w -e proxy
-X
-Xwhen it has completed, the HA pair will be running and replicating.
-XIf running as non-root, the command asks that some commands manually be run as
-Xroot to complete the installation.
-X
-XIncremental Activation:
-X-----------------------
-XRuns of the replicate script without the -f option will perform an imperfect 
-Xcopy of the primary controller to the secondary without taking the primary down.
-XThis can be used to minimize the downtime necessary to do the initial 
-Xinstallation.  if the data volume to replicate is large, several runs without
-Xthe -f option would approach a perfect copy over a period of days.  the final
-Xactivation with -f during a maintenance window would only copy those data filesi
-Xthat differ from the last copy.
-X
-XPrivilege Escalation:
-X---------------------
-Xthe install-init.sh script is used to install the init scripts, and to set
-Xup a controlled privilege escalation.  this can take the form of sudo settings,
-Xor one of 3 flavors of /sbin/appdservice. run install-init.sh for usage.
-X
-XService Control:
-X----------------
-XAfter activation, the controller service and HA facility can be controlled 
-Xusing the linux service command.  these options must be executed as root.
-XThe default installation will automatically shut down the controller when
-Xthe system is halted, and automatically start it at boot time.
-X
-X	service appdcontroller start
-X	service appdcontroller stop
-X
-Xan additional service, appdcontroller-db, is used to manage the database.
-Xa sensible dependency between the two services is implemented
-X
-XStatus:
-X-------
-XOnce installed as a service, the linux service utility can be run on either
-Xnode to report the current state of the replication, background processes, and
-Xthe controller itself.
-X
-X	service appdcontroller status
-X
-XWatchdog:
-X---------
-XIf enabled, this background process running on the secondary will monitor the
-Xprimary controller and database, and if it detects a failure, will initiate a
-Xfailover automatically.   The failure mode timings are defined in watchdog.sh.
-XThe watchdog is only enabled if the file <controller root>/HA/WATCHDOG_ENABLE
-Xexists. Removing the file causes the watchdog to exit.
-X
-Xto enable the watchdog, as root:
-X	touch <controller root>/HA/WATCHDOG_ENABLE
-X	chmod 777 <controller root>/HA/WATCHDOG_ENABLE
-X	service appdcontroller start
-X
-Xrunning the replicate.sh script with the -w option at final activation will 
-Xcreate the watchdog control file automatically.
-X
-XAssassin:
-X---------
-XAfter a failover, it is possible that the old primary may come online.  If this
-Xoccurs, the load balancer may send load to the old primary.  To prevent this,
-Xthe new primary continually polls the old primary and if it becomes accessible,
-Xkills it and inhibits it from starting again.
-X
-XFailover:
-X---------
-XA manual failover can be triggered by running failover.sh on the secondary.
-XThis will kill the watchdog and activate the database.  it will also try to
-Xassassinate the old primary.
-XThis only happens if replication is broken. if replication is good, we just
-Xdeactivate the other appserver and activation this one, while leaving the db
-Xup.  this case also does not fire up the assassin.
-X
-XLogging:
-X--------
-Xthe logs directory contains several status and progress logs of the various components.
-X
-XRemote controller monitoring
-X----------------------------
-XIf desired it is possible to have the controller's internal Java app agent report to 
-Xanother controller. This is most often useful if two or more controllers have been
-Xdeployed on-premises. Having them both report their health to a controller monitor
-Xsimlifies the monitoring of them all as common health rules and notification policies are
-Xmore easily re-used.
-X
-XAt least four pieces of information are needed to configure remote controller 
-Xmonitoring:
-X	- controller monitor's hostname
-X	- controller monitor's port
-X	- account name within controller monitor
-X	- controller monitor's access key for that account
-X	- [optional] application name to report under
-X
-XThe controller monitor's account names and access keys can be determined with:
-X	cd <controller install dir>
-X	echo "select access_key,name,id from account\G"| bin/controller.sh login-db
-X	this has been put into a script:
-X	./getaccess.sh -p password -h monitorhost:3388
-X	this will output the access key.  you can specify account name.
-X	see usage.
-X
-XYou can send a controller's app agent output to another controller with hostname
-X"cmonitor", access_key "ac-ce-ss-key", account name "customer1", application name 
-X'Prod HA pair' with:
-X	./replicate.sh -s <secondary> -m url=http://cmonitor:8090,access_key="ac-ce-ss-key",account_name=customer1,app_name='Prod HA pair' -f
-X
-XMachine Agent
-X-------------
-XHaving a machine agent on both primary and secondary servers is a pre-requisite step 
-Xto simple monitoring and warning of critical health issues affecting the stability
-Xof the HA controller pair. Getting to this state involves:
-X	1. downloading and installing the machine agent on both primary and
-X	   secondary servers from download.appdynamics.com. For compatibility see 
-X	   docs.appdynamics.com for your version of the controller.
-X	   Ensure that the machine agent install directory is the *same* for both
-X	   primary and secondary servers.
-X	2. Ensure that the same version of the HA Toolkit is available on both
-X	   primary and secondary servers. Use scp or replicate.sh -s <other> 
-X	3. As root (re)run HA Toolkit install on both primary and secondary servers
-X	   including '-a <agent install dir>' parameter. For example:
-X		sudo ./install-init.sh -s -a /opt/appdyn/machine-agent/4.1.5.1
-X	   if the machine agent was extracted into the parent of the appdynamics
-X       controller, or the controller directory itself, the -a may be ommitted.
-X	4. As regular AppD user (re)run replicate.sh .. -f to shutdown controller and
-X	   configure all remaining files with an extra parameter referring to machine
-X	   agent install directory. For example:
-X	   	replicate.sh -s <secondary> -e https://proxy -a /opt/appdyn/machine-agent/3.9.0.0 -t 0 -z -f 
-X
-XIf a remote controller monitor has been configured, include that '-m' option in the 
-Xreplicate.sh command to ensure the machine agents report there also. For example:
-X		./replicate.sh -s <secondary> -m url=http://cmonitor:8090,access_key="ac-ce-ss-key",account_name=customer1,app_name='Prod HA pair' -a /opt/appdyn/machine-agent/3.9.0.0 -f
-X	 5. please note that the machine agent will be run as the same user as
-X        the mysql database.
-X
-XNUMA
-X----
-Xon a numa machine, it may be useful, for performance reasons,  to statically partition the machine to run mysqld on 
-Xone set of nodes and the java appserver on another set of nodes.  this can be easily done by running numa-patch-controller.sh
-Xfrom the HA directory, and copying the numa.settings.template to numa.settings.  edit numa.settings as needed.
-X
-XBest Practices:
-X---------------
-XIf possible, a dedicated network connection should be provisioned between the
-XHA pair.  this set of interfaces should be the ones placed into the /etc/hosts
-Xfiles, and used as the argument for the -s option to the replicate.sh script.
-X
-XBackups are best done by stopping the appdcontroller service on the secondary
-Xand performing a file-level copy of the appdynamics directories.  these can
-Xbe incremental or complete, depending on the reliability of your solution.
-Xwhen the backup is done, simply start the service; replication will catch up
-Xand guarantee the integrity of your data.
-X
-XA load balancer can probe http://<controller>:<port>/rest/serverstatus
-Xto determine which of the two controllers is active. the active node will
-Xreturn a HTTP 200.
-X
-Xshould it be necessary to have a hook in the failover process, for example to update 
-Xa dynamics DNS service or to notify a load balancer or proxy, the failover.sh script 
-Xis the place to add code.
-X
-XVersion:
-X--------
-X$Id: README 1.13 2016-08-04 03:09:49 cmayer Exp $
-X
-END-of-README
-echo x - RUNBOOK
-sed 's/^X//' >RUNBOOK << 'END-of-RUNBOOK'
-XThe HA environment can be in several states, and it is desireable to place 
-Xthe systems into the fully replicated state as soon as possible. here are
-Xthe possible states, how to identify the state, and the corresponding 
-Xprocedure to repair the condition.
-X
-X-----------
-XNOT PRESENT:
-X	the HA package has not been installed on the primary machine.
-X
-Xdiagnosis:
-X	the HA directory is absent from the controller directory.
-X
-Xto fix:
-X	cd <controller root> ; mkdir HA ; cd HA ; bash <path>/HA.shar
-X	then follow the steps for UNINSTALLED
-X
-X-----------
-XUNINSTALLED:
-X	the package is present in the controller HA directory, but the
-X	services have not been installed.
-X
-Xdiagnosis:
-X	service appdcontroller status shows appdcontroller service not found
-X
-Xto fix:
-X	cd <controller root>/HA
-X	become root
-X	./install-init.sh [-c | -s]
-X
-X------------
-XNO HOSTS:
-X	the secondary machine does not have a resolvable host name
-X
-Xdiagnosis:
-X	ping <secondary> returns unknown host
-X
-Xto fix:
-X	add the primary and secondary host name into both machines /etc/hosts files
-X	
-X------------
-XNO SSH:
-X	the appdynamics user does not have no-password ssh access between
-X	machines.
-X
-Xdiagnosis:
-X	ssh <secondary> date prompts for a password
-X
-Xto fix:
-X	in the below, you will be prompted for passwords and confirmations
-X	ssh-keygen -P "" -f ~/.ssh/id_rsa -t rsa
-X	ssh <secondary> ssh-keygen -P "''" -f ~/.ssh/id_rsa -t rsa
-X	scp ~/.ssh/id_rsa.pub <secondary>:.ssh/authorized_keys
-X	scp <secondary>:.ssh/id_rsa.pub ~/.ssh/authorized_keys
-X
-X------------
-XUNREPLICATED: the HA package has been installed on the primary controller,
-Xbut the package has not been activated.
-X
-Xdiagnosis:
-X	service appdcontroller-db status shows "HA not installed" 
-X
-Xto fix:
-X	cd <controller root>/HA
-X	./replicate -s <secondary>
-X	<become root on secondary>
-X		cd <controller root>/HA
-X		./install-init [-c | -s]
-X		exit
-X	<back on primary>
-X	./replicate -s <secondary> -e <vip>	-f
-X		confirm
-X
-X----------
-XDISCONNECTED:
-XReplication communication is being blocked, HA has been installed and activated,
-Xbut a firewall is preventing access to replication communications.
-X
-Xdiagnosis:
-X	service appdcontroller-db status shows 
-X		"Slave_IO_State: Connecting to master"
-X		"Seconds_Behind_Master: NULL"
-X
-Xto fix:
-X	disable the firewall for port 3388
-X	brute force as root:  iptables -F
-X
-X----------
-XREPLICATED, WATCHDOG RUNNING: 
-Xthe HA package is running fully replicated, and the primary node is serving
-Xagents with metric storage, and the UI is responsive.  the secondary is
-Xmonitoring the primary appserver with a watchdog process.
-X
-Xdiagnosis:
-X	service appdcontroller status on the primary reports:
-X	db running as <user> - active
-X	primary
-X		Slave_IO_State: Waiting for master to send event
-X	controller running
-X
-X	service appdcontroller status on the secondary reports:
-X	db running as <user> - passive
-X	secondary
-X		Slave_IO_State: Waiting for master to send event
-X	watchdog running
-X
-Xto fix:
-X	nothing to fix
-X
-X----------
-XREPLICATED, WATCHDOG NOT RUNNING: 
-Xthe HA package is running fully replicated, and the primary node is serving
-Xagents with metric storage, and the UI is responsive.  the secondary is
-Xnot monitoring the primary appserver with a watchdog process.
-X
-Xdiagnosis:
-X	service appdcontroller status on the primary reports:
-X	db running as <user> - active
-X	primary
-X		Slave_IO_State: Waiting for master to send event
-X	controller running
-X
-X	service appdcontroller status on the secondary reports:
-X	db running as <user> - passive
-X	secondary
-X		Slave_IO_State: Waiting for master to send event
-X	watchdog not running
-X
-Xto fix:
-X	on the secondary
-X	cd <controller root>/HA
-X	touch WATCHDOG_ENABLE
-X	/sbin/appdservice appdcontroller start
-X
-X---------
-XFAILED OVER, old primary broken
-XThe current active node has become active because of a failover.  the prior
-Xactive node's database is inaccessible.  the assassin is running on the new
-Xactive node to mark the old active node passive once it comes up.
-X
-Xdiagnosis:
-X	service appdcontroller status on the primary reports:
-X	db running as <user> - active
-X	secondary
-X		Slave_IO_State:
-X		Seconds_Behind_Master: NULL
-X	assassin running
-X
-Xto fix:
-X	replicate from the new active node to the old active node using
-X	the formula for UNREPLICATED
-X
-X------------
-XFAILED OVER, watchdog running
-XThe current active node has become active because of a failover.  the prior
-Xactive node database is still intact, and replication is valid. the new
-Xsecondary node has a watchdog running.  this is identical to the REPLICATED,
-XWATCHDOG_RUNNING state.
-X
-Xdiagnosis:
-X	service appdcontroller status on the original primary reports:
-X	db running as <user> - passive
-X		Slave_IO_State: Waiting for master to send event
-X	secondary
-X	watchdog running
-X
-X	service appdcontroller status on the original secondary reports:
-X	db running as <user> - active
-X	primary
-X		Slave_IO_State: Waiting for master to send event
-X	controller running
-X
-Xto-fix:
-X	no need to fix anything.  should it be desired to make the original node
-X	the active node:
-X
-X	on the original primary,
-X	cd <controller root>/HA
-X	./failover.sh
-X
-X-------------
-XPASSIVE DOWN
-Xthis is a state deliberately caused to perform a consistent backup of the
-Xdatabase.   it is initiated on the passive node by running:
-X/sbin/appdservice appdcontroller-db stop
-X
-Xdiagnosis:
-X	/sbin/appdservice appdcontroller-db status on the passive node reports:
-X	db not running
-X
-Xto-fix:
-X	on the passive controller,
-X	/sbin/appdservice appdcontroller start
-X
-X-------------
-XERROR: bash: get_mysql_passwd: unable to get MySQL root passwd. As appdyn user run HA/save_mysql_passwd.sh interactively and try again.
-X
-Xdiagnosis:
-X	A stored MySQL root password, obfuscated or clear has not been found. Storing the 
-X	MySQL root password to disk is a requirement for the HA Toolkit running with
-X	service which in turn needs privilege escalation eg /sbin/appdservice or sudo or pbrun
-X
-Xto-fix:
-X	> on the server as the intended AppD user (here "appdyn"):
-X	HA/save_mysql_passwd.sh 
-X	> this will persist the password after obfuscating it
-X
-XVersion:
-X--------
-X$Id: RUNBOOK 3.0 2016-08-04 03:09:49 cmayer Exp $
-X
-END-of-RUNBOOK
-echo x - Release_Notes
-sed 's/^X//' >Release_Notes << 'END-of-Release_Notes'
-XRelease notes for version 3.0
-X
-XIn addition to bug fixes, the package has been substantially enhanced and 
-Xre-written for enhanced portability, security, performance and maintainability.
-X
-XThe following new functionality is present:
-X
-X1) replicate optionally can use of non-encrypted rsync.  in environments where 
-Xa VPN or a dedicated network exists between primary and secondary controllers, 
-Xreplication can be noticably faster.  this is enabled by using the -U option.
-X
-X2) mysql replication can use SSL encryption.  a pair of signed certificates 
-Xand keys is exchanged between the 2 mysql instances.  after this negotiation,
-Xall communication for mysql replication is encrypted.
-X
-X3) mysql replication compression is enabled by default
-X
-X4) the secondary no longer places replicated traffic in it's bin-logs.  this
-Xgreatly decreases disk usage on the secondary
-X
-X5) scripts and support files are added for NUMA segregation
-X
-X6) the machine agent is can run as non-root, and automatically is configured
-Xwith additional monitors to surface custom mysql and disk metrics. also,
-Xthe machine agent is automatically detected if it is in the controller root
-Xdirectory or it's parent.  we use the controller JVM, so there is no need
-Xto install anything other than the Java-less zip file of the machine agent.
-X
-X7) configuration of an external monitoring host is simplified
-X
-X8) support for controller versions greater than 4.2.0, which removed the
-Xplaintext password file for mysql root.  we have 2 distinct solutions to
-Xthis:  recreate the db/.rootpw file, or run the save_mysql_passwd.sh script
-Xwhich obfuscates the password and save that, unscrambling it whenever it is
-Xneeded
-X
-X9) more extensive logging of the replicate process
-X
-X10) init script configuration is now done via sysconfig files installed in
-X/etc/sysconfig (for redhat) or /etc/default (for debian).
-X
-X11) greater compatibility with systemd.  newer linux distributions have a
-Xdifferent implementation of boot time init script handling, which does not
-Xsupport the clean execution of the service status verb.  this is deprecated
-Xon these systems, and a new script,  HA/appdstatus.sh, is supplied to replace 
-Xthis functionality.
-X
-XSignificant bug fixes in this release:
-X
-X1) files of size less than 1M are checksummed to prevent rsync missing them
-Xif changes to the file did not cause it to grow
-X
-X2) the database health check now recovers if one of the steps timed out.
-X
-X3) failover can not longer oscillate between two machines
-X
-X4) the secondary controller now waits until the relay logs have been executed
-Xbefore starting the new appserver on failover.   although this can take quite
-Xsome time, it prevents database inconsistencies.
-X
-X------------------------------------
-XRelease notes for version 3.0.1
-X
-Xthis is a minor bugfix and enhancement release.
-X
-X1) added support for fairly ugly root mysql passwords.  whitespace characters
-Xare not supported, but punctuation is ok, plus $*()...
-X
-X2) failover is a bit smarter about breaking replication.   all things being
-Xotherwise ok, if the old primary has been up at least 1 hour, we don't break
-Xreplication
-X
-X3) in the case of a persistent replication break, if we KNOW that the database
-Xis not damaged on each end, we can run replicate -E to restore the slave to
-Xoperation.
-X
-X4) the machine agent is started with nodename set
-X
-X5) install_init.sh changes ownership of the machine agent to RUNUSER
-X
-X6) Documentation on machine agent startup additions
-END-of-Release_Notes
-echo x - appdservice.c
-sed 's/^X//' >appdservice.c << 'END-of-appdservice.c'
-X/*
-X * $Id: appdservice.c 3.0 2016-08-04 12:22:17 cmayer $
-X *
-X * this program is a trampoline for the Appdynamics user to invoke
-X * a controlled escalation of privilege to cause changes in the
-X * installed appdynamics services via the system's service wrapper,
-X * which is root-only
-X *
-X * security is ensured by only changing the enumerated services
-X * and the enumerated funtions.  
-X *
-X * this file contains all the distro specific knowledge
-X * it is intentionally coded in a brute-force manner to be trivially auditable
-X *
-X * all the source strings for the execv array are internal to this file, and
-X * all the input arguments are only read using strcmp;  buffer overflows
-X * are not possible.
-X *
-X * also, since we use execv, no path processing is done.
-X */
-X#include <stdlib.h>
-X#include <stdio.h>
-X#include <string.h>
-X#include <unistd.h>
-X#include <fcntl.h>
-X
-X/*
-X * these names are intentionally not the same pointer, even though they have
-X * the same value.
-X * we never copy anything from the arguments to the exec arguments.
-X */
-Xstruct service {
-X	char *name;
-X	char *service_name;
-X} services[] = {
-X	{ "appdcontroller",		"appdcontroller" },
-X	{ "appdcontroller-db",	"appdcontroller-db" },
-X	{ "appdynamics-machine-agent", 	"appdynamics-machine-agent" }
-X};
-X#define NSRV (sizeof(services)/sizeof(services[0]))
-X
-X/* number of possible handlers */
-X#define	NHAND	3
-X
-Xstruct action {
-X	char *name;
-X	struct handler {
-X		char *prog;
-X		char *verb;
-X	} handlers[NHAND];
-X} actions[] = {
-X	{ "status", {
-X		{ "service", "status" },
-X		{ 0, 0 },
-X		{ 0, 0 }}
-X	},
-X	{ "start", {
-X		{ "service", "start" },
-X		{ 0, 0 },
-X		{ 0, 0 }}
-X	},
-X	{ "stop", {
-X		{ "service", "stop" },
-X		{ 0, 0 },
-X		{ 0, 0 }}
-X	},
-X	{ "enable", {
-X		{ "chkconfig", "on" },
-X		{ "update-rc.d", "enable" },
-X		{ 0, 0 }}
-X	},
-X	{ "disable", {
-X		{ "chkconfig", "off" },
-X		{ "update-rc.d", "disable" },
-X		{ 0, 0 }}
-X	}
-X};
-X#define NACT (sizeof(actions)/sizeof(actions[0]))
-X
-X/*
-X * the complete list of directories for lookup of commands
-X */
-Xchar *bindirs[] = {
-X	"/sbin", "/usr/sbin", 0
-X};
-X
-Xvoid
-Xusage(char *pname)
-X{
-X	int i, j;
-X
-X	fprintf(stderr, "usage: %s <service> <action>\n", pname);
-X	for (i = 0; i < NSRV; i++) {
-X		fprintf(stderr, "\t%s {", services[i].name);
-X		for (j = 0; j < NACT; j++) {
-X			fprintf(stderr, "%s", actions[j].name);
-X			if (j < NACT - 1) {
-X				fprintf(stderr, ",");
-X			}
-X		}
-X		fprintf(stderr, "}\n");
-X	}
-X	exit (1);
-X}
-X
-X/*
-X * return zero if the program is executable in the specified directory
-X */
-Xint
-Xexecutable_at(char *dir, char *prog)
-X{
-X	int dirfd;
-X	int ret;
-X
-X	dirfd = open(dir, O_RDONLY | O_DIRECTORY);
-X	ret = faccessat(dirfd, prog, AT_EACCESS, X_OK);
-X	close(dirfd);
-X	return (ret);
-X}
-X
-Xchar *argvec[4];
-Xchar *progpath;
-X
-Xint
-Xmain(int argc, char**argv)
-X{
-X	char cmdbuf[80];
-X	int svc;
-X	int act;
-X	int hand;
-X	char *prog;
-X	char *dir;
-X	
-X	if (argc != 3) {
-X		usage(argv[0]);
-X		exit (1);
-X	}
-X
-X	/* look up service */
-X	for (svc = 0; svc < NSRV; svc++) {
-X		if (strcmp(services[svc].name, argv[1]) == 0) {
-X			break;
-X		}
-X	}
-X	if (svc >= NSRV) {
-X		fprintf(stderr, "unknown service %s\n", argv[1]);
-X		usage(argv[0]);
-X	}
-X
-X	/* look up action */
-X	for (act = 0; act < NACT; act++) {
-X		if (strcmp(actions[act].name, argv[2]) == 0) {
-X			break;
-X		}
-X	}
-X	if (act >= NACT) {
-X		fprintf(stderr, "unknown action %s\n", argv[2]);
-X		usage(argv[0]);
-X	}
-X
-X	/* validate that we are either the appdynamics user or root */
-X	if (getuid() != APPDUSER && getuid() != 0) {
-X		fprintf(stderr, "must be run as user id %d or root\n", APPDUSER);
-X		exit(2);
-X	}
-X
-X	/* validate that we are effectively root */
-X	if (geteuid() != 0) {
-X		fprintf(stderr, "must be run setuid root\n");
-X		exit(3);
-X	}
-X	
-X	/* definitively become root */
-X	setreuid(0, 0);
-X	setregid(0, 0);
-X
-X	/* iterate through handlers until null */
-X	for (hand = 0; prog = actions[act].handlers[hand].prog; hand++) {
-X
-X		/* search the bindirs */
-X		for (dir = bindirs[0]; dir; dir++) {
-X
-X			/* if we can run it, do so */
-X			if (executable_at(dir, prog)) {
-X
-X				progpath = malloc(strlen(dir) + strlen(prog) + 2);
-X				strcpy(progpath, dir);
-X				strcat(progpath, "/");
-X				strcat(progpath, prog);
-X				argvec[0] = strdup(prog);
-X				argvec[1] = strdup(services[svc].service_name);
-X				argvec[2] = strdup(actions[act].handlers[hand].verb);
-X				argvec[3] = 0;
-X
-X				execv(progpath, argvec);	
-X			}
-X		}
-X	}
-X
-X	fprintf(stderr, "no valid handlers found for service %s action %s\n",
-X		services[svc].name, actions[act].name);
-X	exit(4);
-X}
-END-of-appdservice.c
-echo x - monitors/DiskMonitor/monitor.xml
-sed 's/^X//' >monitors/DiskMonitor/monitor.xml << 'END-of-monitors/DiskMonitor/monitor.xml'
-X<monitor>
-X    <name>DiskMonitor</name>
-X    <type>managed</type>
-X    <enabled>true</enabled>
-X    <enable-override os-type="solaris">true</enable-override>
-X    <enable-override os-type="sunos">true</enable-override>
-X    <description>Disk Monitor
-X    </description>
-X    <monitor-configuration>
-X    </monitor-configuration>
-X    <monitor-run-task>
-X        <execution-style>continuous</execution-style>
-X        <name>Run</name>
-X        <type>executable</type>
-X        <task-arguments>
-X        </task-arguments>
-X        <executable-task>
-X            <type>file</type>
-X            <file os-type="linux">disk-stat.sh</file>
-X        </executable-task>
-X    </monitor-run-task>
-X</monitor>
-END-of-monitors/DiskMonitor/monitor.xml
-echo x - monitors/DiskMonitor/disk-stat.sh
-sed 's/^X//' >monitors/DiskMonitor/disk-stat.sh << 'END-of-monitors/DiskMonitor/disk-stat.sh'
-X#!/bin/sh
-X#
-X# Monitors Disks on Linux
-X#
-X# version 1.3
-X#
-X# rewrite using only:
-X# date, vmstat, awk, cat, sleep, tr, /proc/net/dev, /proc/diskstats, /proc/meminfo
-X#########################################
-X
-XMOUNTS=
-X# uncomment the next line to enable custom metrics for mounted filesystems
-X#MOUNTS=`mount| awk '/^\/dev/ {sub("/dev/","",$1);printf("%s:%s;",$1, $3)}'`
-X# uncomment the next line to enable custom metrics for swap
-X#MOUNTS+=`awk '/\/dev/ {sub("/dev/","",$1);printf("%s:swap;",$1)}'< /proc/swaps`
-X
-X# interval between reads of network and disk numbers
-XSAMPLE=10
-X
-XPATH=$PATH:/bin:/usr/sbin:/sbin:/usr/bin:/usr/local/sbin:/usr/local/bin
-X
-Xwhile [ 1 ]; do
-XNEXTSECONDS=`date +%s | awk '{print $1 + 60}'`
-Xiostat -x 2 2 | awk '
-X	/Device:/ { state ++; next }
-X	( NF == 12 && state == 2) { 
-X		agg="AVERAGE";
-X		dev = $1;
-X		printf("name=Hardware Resources|Disk|%s|avg req size,aggregator=%s,value=%d\n", dev, agg, $8);
-X		printf("name=Hardware Resources|Disk|%s|avg queue length,aggregator=%s,value=%d\n", dev, agg, $9);
-X		printf("name=Hardware Resources|Disk|%s|avg wait (us),aggregator=%s,value=%d\n", dev, agg, $10*1000);
-X		printf("name=Hardware Resources|Disk|%s|avg svctime (us),aggregator=%s,value=%d\n", dev, agg, $11*1000);
-X		printf("name=Hardware Resources|Disk|%s|utilization (us),aggregator=%s,value=%d\n", dev, agg, $12);
-X	}
-X'
-X
-XSLEEPTIME=`date +"$NEXTSECONDS %s" | awk '{if ($1 > $2) print $1 - $2; else print 0;}'`
-Xsleep $SLEEPTIME
-Xdone
-END-of-monitors/DiskMonitor/disk-stat.sh
-echo x - monitors/MysqlMonitor/monitor.xml
-sed 's/^X//' >monitors/MysqlMonitor/monitor.xml << 'END-of-monitors/MysqlMonitor/monitor.xml'
-X<monitor>
-X    <name>MysqlMonitor</name>
-X    <type>managed</type>
-X    <enabled>true</enabled>
-X    <enable-override os-type="solaris">true</enable-override>
-X    <enable-override os-type="sunos">true</enable-override>
-X    <description>Mysql Monitor
-X    </description>
-X    <monitor-configuration>
-X    </monitor-configuration>
-X    <monitor-run-task>
-X        <execution-style>continuous</execution-style>
-X        <name>Run</name>
-X        <type>executable</type>
-X        <task-arguments>
-X        </task-arguments>
-X        <executable-task>
-X            <type>file</type>
-X            <file os-type="linux">mysql-stat.sh</file>
-X        </executable-task>
-X    </monitor-run-task>
-X</monitor>
-END-of-monitors/MysqlMonitor/monitor.xml
-echo x - monitors/MysqlMonitor/mysql-stat.sh
-sed 's/^X//' >monitors/MysqlMonitor/mysql-stat.sh << 'END-of-monitors/MysqlMonitor/mysql-stat.sh'
-X#!/bin/bash
-X#
-X# Monitors INNODB
-X#
-X# $Id: mysql-stat.sh 3.0 2016-08-04 03:09:03 cmayer $
-X
-XPATH=$PATH:/bin:/usr/sbin:/sbin:/usr/bin:/usr/local/sbin:/usr/local/bin
-X
-X[ -f /etc/sysconfig/appdcontroller ] && . /etc/sysconfig/appdcontroller
-X[ -f /etc/default/appdcontroller ] && . /etc/default/appdcontroller
-X
-Xif [ -x $APPD_ROOT/HA/mysqlclient.sh ] ; then
-X	MYSQLCLIENT="$APPD_ROOT/HA/mysqlclient.sh"
-Xelse
-X	MYSQLCLIENT="$APPD_ROOT/bin/controller.sh login-db"
-X fi 
-X
-Xwhile [ 1 ]; do
-XNEXTSECONDS=`date +%s | awk '{print $1 + 60}'`
-X
-Xecho "show engine innodb status\G" | $MYSQLCLIENT | awk '
-X
-X	/^BUFFER POOL AND MEMORY/ { state = 1; }
-X	/^Database pages/ { if (state == 1) {
-X		bufcnt = $3; 
-X	}}
-X	/^Modified/ { if (state == 1) {
-X		dirty = $4;
-X	}}
-X	/^Old database pages/ { if (state == 1) {
-X		oldpages = $4;
-X	}}
-X
-X	/^INDIVIDUAL BUFFER POOL INFO/ { state = 2; }
-X
-X	/^TRANSACTIONS/ { state = 3; }
-X	/^History list length/ { if (state == 3) histlen = $4; }
-X	/^---TRANSACTION.*ACTIVE/ { if (state == 3) {
-X		xcount++;
-X		active = $4; if (active > hiwat) {hiwat = active}
-X	}}
-X
-X	/^FILE I/ { state = 4; }
-X	/reads.*writes.*fsyncs/ { if (state == 4) {
-X		reads = $1; writes = $6; syncs = $8;
-X	}}
-X
-X	/^LOG/ { state = 5; }
-X	/Log sequence number/ { if (state == 5) { logseq = $4}}
-X	/Log flushed up to/ { if (state == 5) { logflushed = $5}}
-X	/Last checkpoint at/ { if (state == 5) { logcheckpoint = $4}}
-X	/Max checkpoint age/ { if (state == 5) { maxcheckpointage = $4}}
-X	/Checkpoint age target/ { if (state == 5) { checkpointagetarget = $4}}
-X	/Modified age/ { if (state == 5) { modifiedage = $3}}
-X	/Checkpoint age/ { if (state == 5) { checkpointage = $3}}
-X	/pending log writes,.*pending chkp writes/ { if (state == 5) { pendinglog=$1; pendingckpt=$5 }}
-X	/log.*done.*log.*second/ { if (state == 5) {
-X		logio = $5;
-X	}}
-X
-X	/^ROW OPERATIONS/ { state = 6; }
-X	/inserts.*updates.*deletes.*reads/ { if (state == 6) {
-X		inserts = $1; updates = $3; deletes = $5; rowreads = $7;
-X	}}
-X
-X	END { 
-X		printf("name=Custom Metrics|Mysql|Buffers Used,aggregator=OBSERVATION,value=%d\n", bufcnt);
-X		printf("name=Custom Metrics|Mysql|Buffers Dirty,aggregator=OBSERVATION,value=%d\n", dirty);
-X		printf("name=Custom Metrics|Mysql|Buffers Old,aggregator=OBSERVATION,value=%d\n", oldpages);
-X
-X		printf("name=Custom Metrics|Mysql|Transaction count,aggregator=OBSERVATION,value=%d\n", xcount);
-X		printf("name=Custom Metrics|Mysql|Transaction high time,aggregator=OBSERVATION,value=%d\n", hiwat);
-X
-X		printf("name=Custom Metrics|Mysql|File reads,aggregator=OBSERVATION,value=%d\n", reads);
-X		printf("name=Custom Metrics|Mysql|File writes,aggregator=OBSERVATION,value=%d\n", writes);
-X		printf("name=Custom Metrics|Mysql|File syncs,aggregator=OBSERVATION,value=%d\n", syncs);
-X
-X		printf("name=Custom Metrics|Mysql|Log seq number,aggregator=OBSERVATION,value=%d\n", logseq);
-X		printf("name=Custom Metrics|Mysql|Log flushed,aggregator=OBSERVATION,value=%d\n", logflushed);
-X		printf("name=Custom Metrics|Mysql|Log checkpoint,aggregator=OBSERVATION,value=%d\n", logcheckpoint);
-X
-X		printf("name=Custom Metrics|Mysql|Log dirty,aggregator=OBSERVATION,value=%d\n", logseq - logflushed);
-X		printf("name=Custom Metrics|Mysql|Log used,aggregator=OBSERVATION,value=%d\n", logseq - logcheckpoint);
-X
-X		printf("name=Custom Metrics|Mysql|Log max checkpoint age,aggregator=OBSERVATION,value=%d\n", maxcheckpointage);
-X		printf("name=Custom Metrics|Mysql|Log checkpoint age target,aggregator=OBSERVATION,value=%d\n", checkpointagetarget);
-X		printf("name=Custom Metrics|Mysql|Log modified age,aggregator=OBSERVATION,value=%d\n", modifiedage);
-X		printf("name=Custom Metrics|Mysql|Log checkpoint age,aggregator=OBSERVATION,value=%d\n", checkpointage);
-X		printf("name=Custom Metrics|Mysql|Log pending log writes,aggregator=OBSERVATION,value=%d\n", pendinglog);
-X		printf("name=Custom Metrics|Mysql|Log pending checkpoint writes,aggregator=OBSERVATION,value=%d\n", pendingckpt);
-X		printf("name=Custom Metrics|Mysql|Log io,aggregator=OBSERVATION,value=%d\n", logio);
-X
-X		printf("name=Custom Metrics|Mysql|Row inserts,aggregator=OBSERVATION,value=%d\n", inserts);
-X		printf("name=Custom Metrics|Mysql|Row updates,aggregator=OBSERVATION,value=%d\n", updates);
-X		printf("name=Custom Metrics|Mysql|Row deletes,aggregator=OBSERVATION,value=%d\n", deletes);
-X		printf("name=Custom Metrics|Mysql|Row reads,aggregator=OBSERVATION,value=%d\n", rowreads);
-X
-X	}
-X'
-X
-Xecho "show slave status\G" | $MYSQLCLIENT | awk '
-X
-X	/Seconds_Behind_Master:/ { spm = $2; }
-X
-X	END { 
-X		printf("name=Custom Metrics|Mysql|Slave Seconds Behind Master,aggregator=OBSERVATION,value=%d\n", spm);
-X	}
-X'
-Xecho "select value from global_configuration_local where name = 'appserver.mode'\G" | $MYSQLCLIENT | awk '
-X
-X	/value:/ { if ($2 == "active") active = 1; else active = 0; }
-X
-X	END { 
-X		printf("name=Custom Metrics|Mysql|Appserver Active,aggregator=OBSERVATION,value=%d\n", active);
-X	}
-X'
-X
-XSLEEPTIME=`date +"$NEXTSECONDS %s" | awk '{if ($1 > $2) print $1 - $2; else print 0;}'`
-Xsleep $SLEEPTIME
-Xdone
-END-of-monitors/MysqlMonitor/mysql-stat.sh
 chmod ugo+rx . .. ; find . -name \*.sh -print | xargs chmod ugo+rx; exit
 

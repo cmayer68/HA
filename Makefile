@@ -18,13 +18,6 @@
 
 SHELL=/bin/bash
 
-APPD_ROOT=/opt/AppDynamics/Controller
-
-SRC_ROOT := $(shell pwd)
-BUILDDIR := ../../build
-EMBEDDER := ../../../tools/embed.pl
-EMBED := perl $(EMBEDDER)
-
 BASH_SRC= assassin.sh failover.sh watchdog.sh \
 	watchdog.settings.template \
 	replicate.sh install-init.sh uninstall-init.sh \
@@ -48,37 +41,28 @@ MONITORS= \
 	monitors/MysqlMonitor/monitor.xml monitors/MysqlMonitor/mysql-stat.sh \
 	monitors/DiskMonitor/README monitors/MysqlMonitor/README
 
-NOT_EMBEDDED= README RUNBOOK Release_Notes $(C_SRC) $(MONITORS)
+NOT_EMBEDDED= VERSION README RUNBOOK Release_Notes $(C_SRC)
 
-BASH_SRC_EMBEDDED := $(addprefix $(BUILDDIR)/,$(BASH_SRC))
+BASH_SRC_EMBEDDED := $(addprefix build/,$(BASH_SRC))
 
 SOURCES= $(NOT_EMBEDDED) $(BASH_SRC_EMBEDDED)
 
-all: publish
+all: HA.shar
 
-install:
-	rm -f $(APPD_ROOT)/HA/*
-	mkdir -p $(APPD_ROOT)/HA
-	cp README *.sh $(APPD_ROOT)/HA
-	sudo $(APPD_ROOT)/HA/install-init.sh
-
-HA.shar: $(SOURCES) Makefile
-	date +"# HA package built %c" > HA.shar
+HA.shar: build $(SOURCES) Makefile
+	date +"# HA package version `cat VERSION` built %c" > HA.shar
 	echo "if echo '" >> HA.shar
 	echo "' | od -b | grep -q 015 ; then echo dos format script - exiting ; exit 0 ; fi ; true" >> HA.shar
-	cd $(BUILDDIR) && shar $(DIRS) $(BASH_SRC) | sed -e '/^exit/d' >> $(SRC_ROOT)/HA.shar
-	shar $(NOT_EMBEDDED) | sed -e 's/^exit/chmod ugo+rx . .. ; find . -name \\*.sh -print | xargs chmod ugo+rx; exit/' >> HA.shar
+	cd build && shar $(NOT_EMBEDDED) $(DIRS) $(MONITORS) $(BASH_SRC) >> ../HA.shar
+	sed -i '' 's/^exit/chmod ugo+rx . .. ; find . -name \\*.sh -print | xargs chmod ugo+rx; exit/' HA.shar
 
-$(BUILDDIR)/%: % $(EMBEDDER)
-	$(EMBED) $< > $@
+build/%: % tools/embed.pl
+	perl tools/embed.pl $< > $@
 
-# ensure that $(BUILDDIR) is an 'order-only' dependency of $(SOURCES)
-# so that a change in directory timestamp does not force rebuild of $(SOURCES)
-$(SOURCES): | $(BUILDDIR)
-
-$(BUILDDIR):
-	mkdir $(BUILDDIR)
-	(cd $(BUILDDIR) ; mkdir -p $(DIRS))
+build: $(NOT_EMBEDDED)
+	mkdir -p build
+	(cd build ; mkdir -p $(DIRS))
+	cp -r $(NOT_EMBEDDED) monitors build
 
 # useful debug aid. View variables on cmd line with:
 #  make V="SOURCES BASH_SRC_EMBEDDED" debug
@@ -93,11 +77,10 @@ print-%:
 #
 # some common targets
 #
-publish: HA.shar
 
 clean:
 	rm -f appdservice
-	rm -rf $(BUILDDIR)
+	rm -rf build
 
 clobber: clean
 	rm -f HA.shar
